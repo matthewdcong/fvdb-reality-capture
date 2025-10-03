@@ -22,6 +22,9 @@ def main(
     save_results: bool = True,
     save_eval_images: bool = False,
 ):
+    if device == "cudamanaged":
+        import torch_cudamanaged
+
     logging.basicConfig(level=logging.INFO, format="%(levelname)s : %(message)s")
 
     checkpoint: Checkpoint = Checkpoint.load(

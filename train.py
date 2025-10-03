@@ -33,6 +33,9 @@ def main(
     verbose: bool = False,
     dataset_type: Literal["colmap", "simple_directory"] = "colmap",
 ):
+    if device == "cudamanaged":
+        import torch_cudamanaged
+
     log_level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(level=log_level, format="%(levelname)s : %(message)s")
 

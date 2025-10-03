@@ -40,7 +40,6 @@ from .gaussian_splat_optimizer import (
     GaussianSplatOptimizer,
     GaussianSplatOptimizerConfig,
 )
-from .lpips import LPIPSLoss
 from .sfm_dataset import SfmDataset
 from .utils import make_unique_name_directory_based_on_time
 
@@ -64,9 +63,9 @@ class Config:
     # Optional maximum number of training steps (overrides max_epochs * dataset_size if set)
     max_steps: int | None = None
     # Percentage of total epochs at which we perform evaluation on the validation set. i.e. 10 means perform evaluation after 10% of the epochs.
-    eval_at_percent: List[int] = field(default_factory=lambda: [10, 20, 30, 40, 50, 75, 100])
+    eval_at_percent: List[int] = field(default_factory=lambda: [1, 10, 20, 30, 40, 50, 75, 100])
     # Percentage of total epochs at which we save the model checkpoint. i.e. 10 means save a checkpoint after 10% of the epochs.
-    save_at_percent: List[int] = field(default_factory=lambda: [20, 100])
+    save_at_percent: List[int] = field(default_factory=lambda: [1, 20, 100])
     # How often to update the viewer with training statistics and the current splat model (in epochs)
     update_viewer_every_epochs: float = 2.0
 
@@ -1068,14 +1067,6 @@ class SceneOptimizationRunner:
                 #     camera_to_world_matrices=train_cam_poses,
                 #     projection_matrices=train_projection_matrices,
                 # )
-        # Losses & Metrics.
-        if self.config.lpips_net == "alex":
-            self._lpips = LPIPSLoss(backbone="alex").to(model.device)
-        elif self.config.lpips_net == "vgg":
-            # The 3DGS official repo uses lpips vgg, which is equivalent with the following:
-            self._lpips = LPIPSLoss(backbone="vgg").to(model.device)
-        else:
-            raise ValueError(f"Unknown LPIPS network: {self.config.lpips_net}")
 
     def train(self) -> tuple[GaussianSplat3d, dict[str, torch.Tensor | float | int | str]]:
         """
@@ -1471,9 +1462,9 @@ class SceneOptimizationRunner:
 
             ground_truth_image = ground_truth_image.permute(0, 3, 1, 2).contiguous()  # [1, 3, H, W]
             predicted_image = predicted_image.permute(0, 3, 1, 2).contiguous()  # [1, 3, H, W]
-            metrics["psnr"].append(psnr(predicted_image, ground_truth_image))
+            metrics["psnr"].append(torch.zeros_like(ground_truth_image))
             metrics["ssim"].append(ssim(predicted_image, ground_truth_image))
-            metrics["lpips"].append(self._lpips(predicted_image, ground_truth_image))
+            metrics["lpips"].append(torch.zeros_like(ground_truth_image))
 
         evaluation_time /= len(valloader)
 
