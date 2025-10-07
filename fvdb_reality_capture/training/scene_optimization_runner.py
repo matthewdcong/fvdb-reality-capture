@@ -615,7 +615,7 @@ class SceneOptimizationRunner:
         def _knn(x_np: np.ndarray, k: int = 4) -> torch.Tensor:
             kd_tree = cKDTree(x_np)  # type: ignore
             distances, _ = kd_tree.query(x_np, k=k)
-            return torch.from_numpy(distances).to(device=device, dtype=torch.float32)
+            return torch.from_numpy(distances).to(dtype=torch.float32)
 
         def _rgb_to_sh(rgb: torch.Tensor) -> torch.Tensor:
             C0 = 0.28209479177387814
@@ -623,15 +623,16 @@ class SceneOptimizationRunner:
 
         num_gaussians = training_dataset.points.shape[0]
 
-        dist2_avg = (_knn(training_dataset.points, 4)[:, 1:] ** 2).mean(dim=-1)  # [N,]
+        k_nearest_neighbors = _knn(training_dataset.points, 4)[:, 1:].contiguous().to(device=device)
+        dist2_avg = (k_nearest_neighbors ** 2).mean(dim=-1)  # [N,]
         dist_avg = torch.sqrt(dist2_avg)
         log_scales = torch.log(dist_avg * config.initial_covariance_scale).unsqueeze(-1).repeat(1, 3)  # [N, 3]
 
-        means = torch.from_numpy(training_dataset.points).to(device=device, dtype=torch.float32)  # [N, 3]
-        quats = torch.rand((num_gaussians, 4), device=device)  # [N, 4]
+        means = torch.from_numpy(training_dataset.points).to(torch.float32).to(device=device)  # [N, 3]
+        quats = torch.rand((num_gaussians, 4)).to(device=device)  # [N, 4]
         logit_opacities = torch.logit(torch.full((num_gaussians,), config.initial_opacity, device=device))  # [N,]
 
-        rgbs = torch.from_numpy(training_dataset.points_rgb / 255.0).to(device=device, dtype=torch.float32)  # [N, 3]
+        rgbs = torch.from_numpy(training_dataset.points_rgb / 255.0).to(dtype=torch.float32).contiguous().to(device=device)  # [N, 3]
         sh_0 = _rgb_to_sh(rgbs).unsqueeze(1)  # [N, 1, 3]
 
         sh_n = torch.zeros((num_gaussians, (config.sh_degree + 1) ** 2 - 1, 3), device=device)  # [N, K-1, 3]
