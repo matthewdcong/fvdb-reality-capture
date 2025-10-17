@@ -65,7 +65,7 @@ class Config:
     # Percentage of total epochs at which we perform evaluation on the validation set. i.e. 10 means perform evaluation after 10% of the epochs.
     eval_at_percent: List[int] = field(default_factory=lambda: [1, 10, 20, 30, 40, 50, 75, 100])
     # Percentage of total epochs at which we save the model checkpoint. i.e. 10 means save a checkpoint after 10% of the epochs.
-    save_at_percent: List[int] = field(default_factory=lambda: [1, 20, 100])
+    save_at_percent: List[int] = field(default_factory=lambda: [1, 10, 20, 30, 40, 50, 75, 100])
     # How often to update the viewer with training statistics and the current splat model (in epochs)
     update_viewer_every_epochs: float = 2.0
 
@@ -1139,8 +1139,10 @@ class SceneOptimizationRunner:
         if self.pose_adjust_optimizer is not None:
             self.pose_adjust_optimizer.zero_grad()
 
+        torch.cuda.profiler.cudart().cudaProfilerStart()
         for epoch in range(self.config.max_epochs):
             for minibatch in trainloader:
+                torch.cuda.nvtx.range_push(f"minibatch{pbar.n}")
                 batch_size = minibatch["image"].shape[0]
 
                 # Skip steps before the start step
@@ -1190,59 +1192,52 @@ class SceneOptimizationRunner:
                     self.config.antialias,
                 )
 
-                # If you have very large images, you can iterate over disjoint crops and accumulate gradients
-                # If cfg.crops_per_image is 1, then this just returns the image
-                for pixels, mask_pixels, crop, is_last in crop_image_batch(image, mask, self.config.crops_per_image):
-                    # Actual pixels to compute the loss on, normalized to [0, 1]
-                    pixels = pixels.to(self.device) / 255.0  # [1, H, W, 3]
+                # Actual image to compute the loss on, normalized to [0, 1]
+                image = image.to(self.device) / 255.0  # [1, H, W, 3]
 
-                    # Render an image from the gaussian splats
-                    # possibly using a crop of the full image
-                    crop_origin_w, crop_origin_h, crop_w, crop_h = crop
-                    colors, alphas = self.model.render_from_projected_gaussians(
-                        projected_gaussians, crop_w, crop_h, crop_origin_w, crop_origin_h, self.config.tile_size
-                    )
-                    # If you want to add random background, we'll mix it in here
-                    if self.config.random_bkgd:
-                        bkgd = torch.rand(1, 3, device=self.device)
-                        colors = colors + bkgd * (1.0 - alphas)
+                # Render an image from the gaussian splats
+                colors, alphas = self.model.render_from_projected_gaussians(
+                    projected_gaussians, image.shape[2], image.shape[1], 0, 0, self.config.tile_size
+                )
+                # If you want to add random background, we'll mix it in here
+                if self.config.random_bkgd:
+                    bkgd = torch.rand(1, 3, device=self.device)
+                    colors = colors + bkgd * (1.0 - alphas)
 
-                    if mask_pixels is not None:
-                        # set the ground truth pixel values to match render, thus loss is zero at mask pixels and not updated
-                        mask_pixels = mask_pixels.to(self.device)
-                        pixels[~mask_pixels] = colors.detach()[~mask_pixels]
+                if mask is not None:
+                    # set the ground truth pixel values to match render, thus loss is zero at mask image and not updated
+                    mask = mask.to(self.device)
+                    image[~mask] = colors.detach()[~mask]
 
-                    # Image losses
-                    l1loss = F.l1_loss(colors, pixels)
-                    ssimloss = 1.0 - ssim(
-                        colors.permute(0, 3, 1, 2).contiguous(),
-                        pixels.permute(0, 3, 1, 2).contiguous(),
-                    )
-                    loss = torch.lerp(l1loss, ssimloss, self.config.ssim_lambda)
+                # Image losses
+                l1loss = F.l1_loss(colors, image)
+                ssimloss = 1.0 - ssim(
+                    colors.permute(0, 3, 1, 2).contiguous(),
+                    image.permute(0, 3, 1, 2).contiguous(),
+                )
+                loss = torch.lerp(l1loss, ssimloss, self.config.ssim_lambda)
 
-                    # Rgularize opacity to ensure Gaussian's don't become too opaque
-                    if self.config.opacity_reg > 0.0:
-                        loss = loss + self.config.opacity_reg * torch.abs(self.model.opacities).mean()
+                # Rgularize opacity to ensure Gaussian's don't become too opaque
+                if self.config.opacity_reg > 0.0:
+                    loss = loss + self.config.opacity_reg * torch.abs(self.model.opacities).mean()
 
-                    # Regularize scales to ensure Gaussians don't become too large
-                    if self.config.scale_reg > 0.0:
-                        loss = loss + self.config.scale_reg * torch.abs(self.model.scales).mean()
+                # Regularize scales to ensure Gaussians don't become too large
+                if self.config.scale_reg > 0.0:
+                    loss = loss + self.config.scale_reg * torch.abs(self.model.scales).mean()
 
-                    # If you're optimizing poses, regularize the pose parameters so the poses
-                    # don't drift too far from the initial values
-                    if (
-                        self.pose_adjust_model is not None
-                        and pose_opt_start_step <= self._global_step < pose_opt_stop_step
-                    ):
-                        pose_params = self.pose_adjust_model.pose_embeddings(image_ids)
-                        pose_reg = torch.mean(torch.abs(pose_params))
-                        loss = loss + self.config.pose_opt_reg * pose_reg
-                    else:
-                        pose_reg = torch.tensor(0.0, device=self.device)
+                # If you're optimizing poses, regularize the pose parameters so the poses
+                # don't drift too far from the initial values
+                if (
+                    self.pose_adjust_model is not None
+                    and pose_opt_start_step <= self._global_step < pose_opt_stop_step
+                ):
+                    pose_params = self.pose_adjust_model.pose_embeddings(image_ids)
+                    pose_reg = torch.mean(torch.abs(pose_params))
+                    loss = loss + self.config.pose_opt_reg * pose_reg
+                else:
+                    pose_reg = torch.tensor(0.0, device=self.device)
 
-                    # If we're splitting into crops, accumulate gradients, so pass retain_graph=True
-                    # for every crop but the last one
-                    loss.backward(retain_graph=not is_last)
+                loss.backward()
 
                 # Update the log in the progress bar
                 pbar.set_description(
@@ -1326,7 +1321,7 @@ class SceneOptimizationRunner:
                         ssimloss.item(),
                         torch.cuda.max_memory_allocated() / 1024**3,
                         pose_loss=pose_reg.item() if self.config.optimize_camera_poses else None,
-                        gt_img=pixels,
+                        gt_img=image,
                         pred_img=colors,
                     )
 
@@ -1337,6 +1332,7 @@ class SceneOptimizationRunner:
                         self._viewer.add_gaussian_splat_3d("Gaussian Scene", self.model)
 
                 pbar.update(batch_size)
+                torch.cuda.nvtx.range_pop()
                 self._global_step = pbar.n
 
                 # Check if we've reached max_steps and break out of training
@@ -1372,6 +1368,8 @@ class SceneOptimizationRunner:
                     )
                     continue
                 self.eval()
+
+        torch.cuda.profiler.cudart().cudaProfilerStop()
 
         if self._checkpoints_path is not None and 100 in self.config.save_at_percent:
             # If we already saved the final checkpoint at 100%, create a symlink to it so there is always a ckpt_final.pt
@@ -1425,7 +1423,9 @@ class SceneOptimizationRunner:
 
             height, width = ground_truth_image.shape[1:3]
 
-            torch.cuda.synchronize()
+            for i in range(torch.cuda.device_count()):
+                torch.cuda.synchronize(i)
+
             tic = time.time()
 
             predicted_image, _ = self.model.render_images(
@@ -1447,7 +1447,8 @@ class SceneOptimizationRunner:
             # depths = (depths - depths.min()) / (depths.max() - depths.min())
             # depths = depths / depths.max()
 
-            torch.cuda.synchronize()
+            for i in range(torch.cuda.device_count()):
+                torch.cuda.synchronize(i)
 
             evaluation_time += time.time() - tic
 
