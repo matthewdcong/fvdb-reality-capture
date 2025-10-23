@@ -21,7 +21,6 @@ from scipy.spatial import cKDTree  # type: ignore
 from fvdb_reality_capture.sfm_scene import SfmScene
 from fvdb_reality_capture.tools import export_splats_to_usdz
 
-from ._private.lpips import LPIPSLoss
 from ._private.utils import crop_image_batch
 from .camera_pose_adjust import CameraPoseAdjustment
 from .gaussian_splat_dataset import SfmDataset
@@ -73,7 +72,7 @@ class GaussianSplatReconstructionConfig:
     Default: None
     """
 
-    eval_at_percent: List[int] = field(default_factory=lambda: [10, 20, 30, 40, 50, 75, 100])
+    eval_at_percent: List[int] = field(default_factory=lambda: [i + 1 for i in range(9, 100, 10)])
     """
     Percentage of the total optimization epochs at which to perform evaluation on the validation set.
 
@@ -83,7 +82,7 @@ class GaussianSplatReconstructionConfig:
     Default: [10, 20, 30, 40, 50, 75, 100]
     """
 
-    save_at_percent: List[int] = field(default_factory=lambda: [20, 100])
+    save_at_percent: List[int] = field(default_factory=lambda: [i + 1 for i in range(9, 100, 10)])
     """
     Percentage of the total optimization epochs at which to save model checkpoints.
 
@@ -151,14 +150,6 @@ class GaussianSplatReconstructionConfig:
     between rendered images with the radiance field and ground truth images. This weight applies to the SSIM loss term.
 
     Default: ``0.2``
-    """
-
-    lpips_net: Literal["vgg", "alex"] = "alex"
-    """
-    During evaluation, we compute the `Learned Perceptual Image Patch Similarity (LPIPS) <https://arxiv.org/abs/1801.03924>`_ metric
-    as a measure of quality of the reconstruction. This parameter controls which network architecture is used for the LPIPS metric.
-
-    Default: ``"alex"`` meaning the `AlexNet <https://en.wikipedia.org/wiki/AlexNet>`_ architecture.
     """
 
     sparse_depth_reg: float = 0.0
@@ -672,15 +663,6 @@ class GaussianSplatReconstruction:
                 camera_up = (0, 0, 1)
                 self._viz_scene.set_camera_lookat(eye=camera_eye, center=camera_lookat, up=camera_up)
 
-        # Losses & Metrics.
-        if self.config.lpips_net == "alex":
-            self._lpips = LPIPSLoss(backbone="alex").to(model.device)
-        elif self.config.lpips_net == "vgg":
-            # The 3DGS official repo uses lpips vgg, which is equivalent with the following:
-            self._lpips = LPIPSLoss(backbone="vgg").to(model.device)
-        else:
-            raise ValueError(f"Unknown LPIPS network: {self.config.lpips_net}")
-
     @torch.no_grad()
     def state_dict(self) -> dict[str, Any]:
         """
@@ -893,7 +875,7 @@ class GaussianSplatReconstruction:
         def _knn(x_np: np.ndarray, k: int = 4) -> torch.Tensor:
             kd_tree = cKDTree(x_np)  # type: ignore
             distances, _ = kd_tree.query(x_np, k=k)
-            return torch.from_numpy(distances).to(device=device, dtype=torch.float32)
+            return torch.from_numpy(distances).to(dtype=torch.float32)
 
         def _rgb_to_sh(rgb: torch.Tensor) -> torch.Tensor:
             C0 = 0.28209479177387814
@@ -901,15 +883,18 @@ class GaussianSplatReconstruction:
 
         num_gaussians = training_dataset.points.shape[0]
 
-        dist2_avg = (_knn(training_dataset.points, 4)[:, 1:] ** 2).mean(dim=-1)  # [N,]
+        k_nearest_neighbors = _knn(training_dataset.points, 4)[:, 1:].contiguous().to(device=device)
+        dist2_avg = (k_nearest_neighbors ** 2).mean(dim=-1)  # [N,]
         dist_avg = torch.sqrt(dist2_avg)
         log_scales = torch.log(dist_avg * config.initial_covariance_scale).unsqueeze(-1).repeat(1, 3)  # [N, 3]
 
-        means = torch.from_numpy(training_dataset.points).to(device=device, dtype=torch.float32)  # [N, 3]
-        quats = torch.rand((num_gaussians, 4), device=device)  # [N, 4]
+        means = torch.from_numpy(training_dataset.points).to(torch.float32).to(device=device)  # [N, 3]
+        quats = torch.rand((num_gaussians, 4)).to(device=device)  # [N, 4]
         logit_opacities = torch.logit(torch.full((num_gaussians,), config.initial_opacity, device=device))  # [N,]
 
-        rgbs = torch.from_numpy(training_dataset.points_rgb / 255.0).to(device=device, dtype=torch.float32)  # [N, 3]
+        rgbs = (
+            torch.from_numpy(training_dataset.points_rgb / 255.0).to(dtype=torch.float32).contiguous().to(device=device)
+        )  # [N, 3]
         sh_0 = _rgb_to_sh(rgbs).unsqueeze(1)  # [N, 1, 3]
 
         sh_n = torch.zeros((num_gaussians, (config.sh_degree + 1) ** 2 - 1, 3), device=device)  # [N, K-1, 3]
@@ -1107,8 +1092,10 @@ class GaussianSplatReconstruction:
                 range(0, total_steps), initial=self._start_step, unit="steps", desc="Gaussian Splat Reconstruction"
             )
 
+        torch.cuda.cudart().cudaProfilerStart()
         for epoch in range(start_epoch, self.config.max_epochs):
             for minibatch in trainloader:
+                torch.cuda.nvtx.range_push("minibatch")
                 cam_to_world_mats: torch.Tensor = minibatch["camera_to_world"].to(self.device)  # [B, 4, 4]
                 world_to_cam_mats: torch.Tensor = minibatch["world_to_camera"].to(self.device)  # [B, 4, 4]
 
@@ -1140,6 +1127,14 @@ class GaussianSplatReconstruction:
                     minibatch["median_depth"].to(self.device) if "median_depth" in minibatch else None
                 )  # [B,]
 
+                # Actual image to compute the loss on, normalized to [0, 1]
+                image: torch.Tensor = image.to(device=self.device) / 255.0  # [1, H, W, 3]
+
+                if mask is not None:
+                    # set the ground truth pixel values to match render, thus loss is zero at mask image and not updated
+                    mask = mask.to(self.device)
+                    image[~mask] = colors.detach()[~mask]
+
                 # Progressively use higher spherical harmonic degree as we optimize
                 sh_degree_to_use = min(self._global_step // increase_sh_degree_every_step, self.config.sh_degree)
                 projection_function = (
@@ -1161,84 +1156,64 @@ class GaussianSplatReconstruction:
                     self.config.antialias,
                 )
 
-                # If you have very large images, you can iterate over disjoint crops and accumulate gradients
-                # If self.optimization_config.crops_per_image is 1, then this just returns the image
-                for pixels, mask_pixels, crop, is_last in crop_image_batch(image, mask, self.config.crops_per_image):
-                    # Actual pixels to compute the loss on, normalized to [0, 1]
-                    pixels: torch.Tensor = pixels.to(device=self.device) / 255.0  # [1, H, W, 3]
+                # Render an image from the Gaussian splats
+                colors, alphas = self.model.render_from_projected_gaussians(
+                    projected_gaussians,
+                    image.shape[2],
+                    image.shape[1],
+                    0,
+                    0,
+                    self.config.tile_size,
+                )
+                # If you want to add random background, we'll mix it in here
+                if self.config.random_bkgd:
+                    bkgd = torch.rand(1, 3, device=self.device)
+                    colors = colors + bkgd * (1.0 - alphas)
 
-                    # Render an image from the gaussian splats
-                    # possibly using a crop of the full image
-                    crop_origin_w, crop_origin_h, crop_w, crop_h = crop
-                    rendered_results, alphas = self.model.render_from_projected_gaussians(
-                        projected_gaussians,
-                        crop_w,
-                        crop_h,
-                        crop_origin_w,
-                        crop_origin_h,
-                        self.config.tile_size,
-                    )
+                # Image losses
+                l1loss = nnf.l1_loss(colors, image)
+                ssimloss = 1.0 - ssim(
+                    colors.permute(0, 3, 1, 2).contiguous(),
+                    image.permute(0, 3, 1, 2).contiguous(),
+                )
+                loss = torch.lerp(l1loss, ssimloss, self.config.ssim_lambda)  # type: ignore
 
-                    colors = rendered_results[..., : self.model.num_channels]  # [1, H, W, 3]
-
-                    # If you want to add random background, we'll mix it in here
-                    if self.config.random_bkgd:
-                        bkgd = torch.rand(1, 3, device=self.device)
-                        colors = colors + bkgd * (1.0 - alphas)
-
-                    if mask_pixels is not None:
-                        # set the ground truth pixel values to match render, thus loss is zero at mask pixels and not updated
-                        mask_pixels = mask_pixels.to(self.device)
-                        pixels[~mask_pixels] = colors.detach()[~mask_pixels]
-
-                    # Image losses
-                    l1loss = nnf.l1_loss(colors, pixels)
-                    ssimloss = 1.0 - ssim(
-                        colors.permute(0, 3, 1, 2).contiguous(),
-                        pixels.permute(0, 3, 1, 2).contiguous(),
-                    )
-                    loss = torch.lerp(l1loss, ssimloss, self.config.ssim_lambda)  # type: ignore
-
-                    # Apply any additional regularization to the model for the given
-                    # optimizer.
-                    loss = loss + self.optimizer.regularization_loss()
-                    # Sparse depth loss
-                    if sparse_depth is not None and sparse_depth_uv is not None and median_depths is not None:
-                        if self.config.batch_size > 1:
-                            raise NotImplementedError("Sparse depth loss is not implemented for batch_size > 1.")
-                        if rendered_results.shape[-1] != self.model.num_channels + 1:
-                            raise RuntimeError("Model did not render depth channel, but sparse depth loss is enabled.")
-                        if sparse_depth_uv.numel() == 0:
-                            depth_loss = 0.0
-                        else:
-                            depth = rendered_results[..., -1]  # [1, H, W]
-                            depth_uv = depth[:, sparse_depth_uv[0, :, 1], sparse_depth_uv[0, :, 0]]  # [B, N]
-                            alpha_uv = alphas[:, sparse_depth_uv[0, :, 1], sparse_depth_uv[0, :, 0], 0]  # [B, N]
-                            pred_depth = depth_uv / torch.clamp(alpha_uv, min=1e-6)  # [B, N]
-                            pred_depth = pred_depth / median_depths.unsqueeze(1)  # Normalize by median depth
-                            sparse_depth = sparse_depth / median_depths.unsqueeze(1)  # Normalize by median depth
-
-                            depth_loss = nnf.l1_loss(pred_depth, sparse_depth) * self.config.sparse_depth_reg
-                    else:
+                # Sparse depth loss
+                if sparse_depth is not None and sparse_depth_uv is not None and median_depths is not None:
+                    if self.config.batch_size > 1:
+                        raise NotImplementedError("Sparse depth loss is not implemented for batch_size > 1.")
+                    if rendered_results.shape[-1] != self.model.num_channels + 1:
+                        raise RuntimeError("Model did not render depth channel, but sparse depth loss is enabled.")
+                    if sparse_depth_uv.numel() == 0:
                         depth_loss = 0.0
-
-                    loss = loss + depth_loss
-
-                    # If you're optimizing poses, regularize the pose parameters so the poses
-                    # don't drift too far from the initial values
-                    if (
-                        self.pose_adjust_model is not None
-                        and pose_opt_start_step <= self._global_step < pose_opt_stop_step
-                    ):
-                        pose_params = self.pose_adjust_model.pose_embeddings(image_ids)
-                        pose_reg = torch.mean(torch.abs(pose_params))
-                        loss = loss + self.config.pose_opt_reg * pose_reg
                     else:
-                        pose_reg = None
+                        depth = rendered_results[..., -1]  # [1, H, W]
+                        depth_uv = depth[:, sparse_depth_uv[0, :, 1], sparse_depth_uv[0, :, 0]]  # [B, N]
+                        alpha_uv = alphas[:, sparse_depth_uv[0, :, 1], sparse_depth_uv[0, :, 0], 0]  # [B, N]
+                        pred_depth = depth_uv / torch.clamp(alpha_uv, min=1e-6)  # [B, N]
+                        pred_depth = pred_depth / median_depths.unsqueeze(1)  # Normalize by median depth
+                        sparse_depth = sparse_depth / median_depths.unsqueeze(1)  # Normalize by median depth
 
-                    # If we're splitting into crops, accumulate gradients, so pass retain_graph=True
-                    # for every crop but the last one
-                    loss.backward(retain_graph=not is_last)
+                        depth_loss = nnf.l1_loss(pred_depth, sparse_depth) * self.config.sparse_depth_reg
+                        loss = loss + depth_loss
+                else:
+                    depth_loss = 0.0
+
+                # If you're optimizing poses, regularize the pose parameters so the poses
+                # don't drift too far from the initial values
+                if (
+                    self.pose_adjust_model is not None
+                    and pose_opt_start_step <= self._global_step < pose_opt_stop_step
+                ):
+                    pose_params = self.pose_adjust_model.pose_embeddings(image_ids)
+                    pose_reg = torch.mean(torch.abs(pose_params))
+                    loss = loss + self.config.pose_opt_reg * pose_reg
+                else:
+                    pose_reg = None
+
+                # If we're splitting into crops, accumulate gradients, so pass retain_graph=True
+                # for every crop but the last one
+                loss.backward()
 
                 # Refine the gaussians via splitting/duplication/pruning
                 if (
@@ -1281,8 +1256,6 @@ class GaussianSplatReconstruction:
 
                 # Log metrics
                 if self._global_step % self._log_interval_steps == 0:
-                    mem_allocated = torch.cuda.memory_allocated(self.device) / (1024**3)
-                    mem_reserved = torch.cuda.memory_reserved(self.device) / (1024**3)
                     self._writer.log_metric(self._global_step, f"{log_tag}/loss", loss.item())
                     self._writer.log_metric(self._global_step, f"{log_tag}/l1loss", l1loss.item())
                     self._writer.log_metric(self._global_step, f"{log_tag}/ssimloss", ssimloss.item())
@@ -1293,8 +1266,6 @@ class GaussianSplatReconstruction:
                     )
                     self._writer.log_metric(self._global_step, f"{log_tag}/num_gaussians", self.model.num_gaussians)
                     self._writer.log_metric(self._global_step, f"{log_tag}/sh_degree", sh_degree_to_use)
-                    self._writer.log_metric(self._global_step, f"{log_tag}/mem_allocated", mem_allocated)
-                    self._writer.log_metric(self._global_step, f"{log_tag}/mem_reserved", mem_reserved)
                     if pose_reg is not None:
                         self._writer.log_metric(self._global_step, f"{log_tag}/pose_reg_loss", pose_reg.item())
 
@@ -1324,6 +1295,8 @@ class GaussianSplatReconstruction:
                     reached_max_steps = True
                     break
 
+                torch.cuda.nvtx.range_pop()
+
             # Check if we've reached max_steps and break out of outer epoch loop
             if reached_max_steps:
                 break
@@ -1351,6 +1324,7 @@ class GaussianSplatReconstruction:
                     )
                     continue
                 self.eval(log_tag=log_tag + "_eval")
+        torch.cuda.cudart().cudaProfilerStop()
 
         self._logger.info("Training completed.")
 
@@ -1377,8 +1351,7 @@ class GaussianSplatReconstruction:
             pbar = tqdm.tqdm(enumerate(valloader), total=len(self.validation_dataset), unit="imgs", desc="Evaluating")
         else:
             pbar = enumerate(valloader)
-        evaluation_time = 0
-        metrics = {"psnr": [], "ssim": [], "lpips": []}
+        metrics = {"psnr": [], "ssim": []}
         for i, data in pbar:
             world_to_cam_matrices = data["world_to_camera"].to(device)
             projection_matrices = data["projection"].to(device)
@@ -1386,9 +1359,6 @@ class GaussianSplatReconstruction:
             mask_pixels = data["mask"] if "mask" in data and not self.config.ignore_masks else None
 
             height, width = ground_truth_image.shape[1:3]
-
-            torch.cuda.synchronize()
-            tic = time.time()
 
             predicted_image, _ = self.model.render_images(
                 world_to_cam_matrices,
@@ -1409,10 +1379,6 @@ class GaussianSplatReconstruction:
             # depths = (depths - depths.min()) / (depths.max() - depths.min())
             # depths = depths / depths.max()
 
-            torch.cuda.synchronize()
-
-            evaluation_time += time.time() - tic
-
             if mask_pixels is not None:
                 # set the ground truth pixel values to match render, thus loss is zero at mask pixels and not updated
                 mask_pixels = mask_pixels.to(self.device)
@@ -1426,18 +1392,11 @@ class GaussianSplatReconstruction:
             predicted_image = predicted_image.permute(0, 3, 1, 2).contiguous()  # [1, 3, H, W]
             metrics["psnr"].append(psnr(predicted_image, ground_truth_image))
             metrics["ssim"].append(ssim(predicted_image, ground_truth_image))
-            metrics["lpips"].append(self._lpips(predicted_image, ground_truth_image))
-
-        evaluation_time /= len(valloader)
 
         psnr_mean = torch.stack(metrics["psnr"]).mean()
         ssim_mean = torch.stack(metrics["ssim"]).mean()
-        lpips_mean = torch.stack(metrics["lpips"]).mean()
-        self._logger.info(f"Evaluation for stage {log_tag} completed. Average time per image: {evaluation_time:.3f}s")
-        self._logger.info(f"PSNR: {psnr_mean.item():.3f}, SSIM: {ssim_mean.item():.4f}, LPIPS: {lpips_mean.item():.3f}")
+        self._logger.info(f"PSNR: {psnr_mean.item():.3f}, SSIM: {ssim_mean.item():.4f}")
 
         self._writer.log_metric(self._global_step, f"{log_tag}/psnr", psnr_mean.item())
         self._writer.log_metric(self._global_step, f"{log_tag}/ssim", ssim_mean.item())
-        self._writer.log_metric(self._global_step, f"{log_tag}/lpips", lpips_mean.item())
-        self._writer.log_metric(self._global_step, f"{log_tag}/evaluation_time", evaluation_time)
         self._writer.log_metric(self._global_step, f"{log_tag}/num_gaussians", self.model.num_gaussians)

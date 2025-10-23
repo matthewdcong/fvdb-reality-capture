@@ -81,6 +81,10 @@ class Resume(BaseCommand):
     out_path: Annotated[pathlib.Path, arg(aliases=["-o"])] = pathlib.Path("out_resumed.ply")
 
     def execute(self) -> None:
+
+        if self.device == "dgx":
+            import torch_dgx
+
         log_level = logging.DEBUG if self.verbose else logging.INFO
         logging.basicConfig(level=log_level, format="%(levelname)s : %(message)s")
         logger = logging.getLogger(__name__)

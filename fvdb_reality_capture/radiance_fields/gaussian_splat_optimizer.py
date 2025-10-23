@@ -771,12 +771,9 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
         # Helper to compute the quantile of the gradients, using NumPy if we have too many Gaussians for torch.quantile
         # which has a cap at 2**24 elements
         def _grad_2d_quantile(quantile: float) -> float:
-            if self._model.num_gaussians > 2**24:
-                # torch.quantile has a cap at 2**24 elements so fall back to NumPy for large numbers of Gaussians
-                self._logger.debug("Using numpy to compute gradient percentile threshold")
-                return float(np.quantile(accumulated_mean_2d_gradients.cpu().numpy(), quantile))
-            else:
-                return torch.quantile(accumulated_mean_2d_gradients, quantile).item()
+            # torch.quantile has a cap at 2**24 elements so fall back to NumPy for large numbers of Gaussians
+            self._logger.debug("Using numpy to compute gradient percentile threshold")
+            return float(np.quantile(accumulated_mean_2d_gradients.cpu().numpy(), quantile))
 
         # Determine the threshold for the 2D projected gradient based on the selected mode
         if self._config.insertion_grad_2d_threshold_mode == InsertionGrad2dThresholdMode.CONSTANT:
