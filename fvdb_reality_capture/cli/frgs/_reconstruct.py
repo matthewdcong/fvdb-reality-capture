@@ -232,6 +232,10 @@ class Reconstruct(BaseCommand):
             viz_scene (fviz.Scene | None): :class:`fviz.Scene` to use for visualization. If ``None``, no visualization will be done.
 
         """
+
+        if self.device == "dgx":
+            import torch_dgx
+
         crop_bboxes = self.get_crop_bboxes(sfm_scene)
         num_chunks = len(crop_bboxes)
 
@@ -296,6 +300,10 @@ class Reconstruct(BaseCommand):
             writer (GaussianSplatReconstructionWriter): Writer to use for logging and saving metrics.
             viz_scene (fviz.Scene | None): :class:`fviz.Scene` to use for visualization. If ``None``, no visualization will be done.
         """
+
+        if self.device == "dgx":
+            import torch_dgx
+
         runner = GaussianSplatReconstruction.from_sfm_scene(
             sfm_scene,
             config=self.cfg,
