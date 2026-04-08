@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as nnf
 import torch.utils.data
 import tqdm
-from fvdb import GaussianSplat3d, ProjectionType
+from fvdb import GaussianSplat3d, ProjectionMethod, CameraModel
 from fvdb.utils.metrics import psnr, ssim
 from fvdb.viz import Scene
 from scipy.spatial import cKDTree  # type: ignore
@@ -517,6 +517,8 @@ class GaussianSplatReconstruction:
             raise ValueError("Checkpoint is missing pose_adjust_scheduler key.")
 
         global_step = state_dict["step"]
+        state_dict["config"].pop("opacity_reg", 0.0)
+        state_dict["config"].pop("scale_reg", 0.0)
         config = GaussianSplatReconstructionConfig(**state_dict["config"])
 
         np.random.seed(config.seed)
@@ -1149,7 +1151,9 @@ class GaussianSplatReconstruction:
                     image_height,
                     self.config.near_plane,
                     self.config.far_plane,
-                    ProjectionType.PERSPECTIVE,
+                    CameraModel.PINHOLE,
+                    ProjectionMethod.ANALYTIC,
+                    None,
                     sh_degree_to_use,
                     self.config.min_radius_2d,
                     self.config.eps_2d,
@@ -1367,7 +1371,9 @@ class GaussianSplatReconstruction:
                 height,
                 self.config.near_plane,
                 self.config.far_plane,
+                CameraModel.PINHOLE,
                 ProjectionType.PERSPECTIVE,
+                None,
                 self.config.sh_degree,
                 self.config.tile_size,
                 self.config.min_radius_2d,
