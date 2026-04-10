@@ -535,6 +535,10 @@ class GaussianSplatReconstruction:
         else:
             train_indices = np.array(state_dict["train_indices"], dtype=int)
             val_indices = np.array(state_dict["val_indices"], dtype=int)
+
+        if "sh0" in state_dict["model"] and "shN" in state_dict["model"]:
+            state_dict["model"]["sh_coeffs"] = torch.cat([state_dict["model"].pop("sh0"), state_dict["model"].pop("shN")], dim=1)
+
         model = GaussianSplat3d.from_state_dict(state_dict["model"])
         optimizer = BaseGaussianSplatOptimizer.from_state_dict(model, state_dict["optimizer"])
         num_training_poses = state_dict["num_training_poses"]
@@ -901,7 +905,7 @@ class GaussianSplatReconstruction:
 
         sh_n = torch.zeros((num_gaussians, (config.sh_degree + 1) ** 2 - 1, 3), device=device)  # [N, K-1, 3]
 
-        model = GaussianSplat3d.from_tensors(means, quats, log_scales, logit_opacities, sh_0, sh_n, True)
+        model = GaussianSplat3d.from_tensors(means, quats, log_scales, logit_opacities, torch.cat((sh_0, sh_n), dim=1), True)
         model.requires_grad = True
 
         return model

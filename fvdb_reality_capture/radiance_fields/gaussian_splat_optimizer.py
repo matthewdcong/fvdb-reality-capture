@@ -209,14 +209,9 @@ class GaussianSplatOptimizerConfig:
     Learning rate for the logit opacities of the Gaussians.
     """
 
-    sh0_lr: float = 2.5e-3
+    sh_coeffs_lr: float = 2.5e-3
     """
-    Learning rate for the diffuse spherical harmonics (order 0).
-    """
-
-    shN_lr: float = 2.5e-3 / 20
-    """
-    Learning rate for the specular spherical harmonics (order > 0).
+    Learning rate for the spherical harmonics.
     """
 
     def make_optimizer(self, model: GaussianSplat3d, sfm_scene: SfmScene) -> BaseGaussianSplatOptimizer:
@@ -363,8 +358,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
             "log_scales": self._config.log_scales_lr * lr_batch_rescale,
             "quats": self._config.quats_lr * lr_batch_rescale,
             "logit_opacities": self._config.logit_opacities_lr * lr_batch_rescale,
-            "sh0": self._config.sh0_lr * lr_batch_rescale,
-            "shN": self._config.shN_lr * lr_batch_rescale,
+            "sh_coeffs": self._config.sh_coeffs_lr * lr_batch_rescale,
         }
 
         rescaled_betas = (1.0 - batch_size * (1.0 - 0.9), 1.0 - batch_size * (1.0 - 0.999))
@@ -420,6 +414,10 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
             raise ValueError("State dict is missing version information")
         if state_dict["version"] not in (3,):
             raise ValueError(f"Unsupported version: {state_dict['version']}")
+
+        if "sh0_lr" in state_dict["config"] and "shN_lr" in state_dict["config"]:
+            state_dict["config"]["sh_coeffs_lr"] = state_dict["config"].pop("sh0_lr")
+            state_dict["config"].pop("shN_lr")
 
         config = GaussianSplatOptimizerConfig(**state_dict["config"])
 
@@ -506,8 +504,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
             quats=_copy_param_and_grad(self._model.quats),
             log_scales=_copy_param_and_grad(self._model.log_scales),
             logit_opacities=_copy_param_and_grad(self._model.logit_opacities),
-            sh0=_copy_param_and_grad(self._model.sh0),
-            shN=_copy_param_and_grad(self._model.shN),
+            sh_coeffs=_copy_param_and_grad(self._model.sh_coeffs),
         )
         self._update_optimizer_params_and_state(lambda x: x[indices_or_mask])
 
@@ -627,8 +624,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
             quats=_cat_parameter(self._model.quats, "quats"),
             log_scales=_cat_parameter(self._model.log_scales, "log_scales"),
             logit_opacities=_cat_parameter(self._model.logit_opacities, "logit_opacities"),
-            sh0=_cat_parameter(self._model.sh0, "sh0"),
-            shN=_cat_parameter(self._model.shN, "shN"),
+            sh_coeffs=_cat_parameter(self._model.sh_coeffs, "sh_coeffs"),
         )
 
         def update_state_function(x: torch.Tensor):
@@ -730,8 +726,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
                     "lr": config.logit_opacities_lr,
                     "name": "logit_opacities",
                 },
-                {"params": model.sh0, "lr": config.sh0_lr, "name": "sh0"},
-                {"params": model.shN, "lr": config.shN_lr, "name": "shN"},
+                {"params": model.sh_coeffs, "lr": config.sh_coeffs_lr, "name": "sh_coeffs"},
             ],
             eps=1e-15,
             betas=(0.9, 0.999),
@@ -978,8 +973,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
         * ``"quats"``: The quaternions of the new Gaussians of shape ``[(D-1)*M, 4]``.
         * ``"log_scales"``: The log scales of the new Gaussians of shape ``[(D-1)*M, 3]``.
         * ``"logit_opacities"``: The logit opacities of the new Gaussians of shape ``[(D-1)*M]``.
-        * ``"sh0"``: The SH0 coefficients of the new Gaussians of shape ``[(D-1)*M, 1, 3]``.
-        * ``"shN"``: The SHN coefficients of the new Gaussians of shape ``[(D-1)*M, K-1, 3]``.
+        * ``"sh_coeffs"``: The SH coefficients of the new Gaussians of shape ``[(D-1)*M, K, 3]``.
 
         Args:
             duplication_indices (torch.Tensor): A 1D tensor of indices indicating which Gaussians to duplicate.
@@ -998,8 +992,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
                 "quats": torch.empty((0, 4), device=self._model.device),
                 "log_scales": torch.empty((0, 3), device=self._model.device),
                 "logit_opacities": torch.empty((0,), device=self._model.device),
-                "sh0": torch.empty((0, 1, 3), device=self._model.device),
-                "shN": torch.empty((0, self._model.shN.shape[1], 3), device=self._model.device),
+                "sh_coeffs": torch.empty((0, self._model.sh_coeffs.shape[1], 3), device=self._model.device),
             }
 
         num_new_gaussians = duplication_factor - 1  # We already have one copy of each Gaussian in the model
@@ -1007,8 +1000,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
         means_to_add = self._model.means[duplication_indices].repeat(num_new_gaussians, 1)  # [(D-1)*M, 3]
         log_scales_to_add = self._model.log_scales[duplication_indices].repeat(num_new_gaussians, 1)  # [(D-1)*M, 3]
         quats_to_add = self._model.quats[duplication_indices].repeat(num_new_gaussians, 1)  # [(D-1)*M, 4]
-        sh0_to_add = self._model.sh0[duplication_indices].repeat(num_new_gaussians, 1, 1)  # [(D-1)*M, 1, 3]
-        shN_to_add = self._model.shN[duplication_indices].repeat(num_new_gaussians, 1, 1)  # [(D-1)*M, K-1, 3]
+        sh_coeffs_to_add = self._model.sh_coeffs[duplication_indices].repeat(num_new_gaussians, 1, 1)  # [(D-1)*M, K, 3]
 
         if self._config.opacity_updates_use_revised_formulation:
             logit_opacities_to_add = self._compute_revised_opacities(duplication_indices)  # [M,]
@@ -1023,8 +1015,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
             "quats": quats_to_add,
             "log_scales": log_scales_to_add,
             "logit_opacities": logit_opacities_to_add,
-            "sh0": sh0_to_add,
-            "shN": shN_to_add,
+            "sh_coeffs": sh_coeffs_to_add,
         }
 
     @torch.no_grad()
@@ -1039,8 +1030,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
         - ``"quats"``: The quaternions of the new Gaussians of shape ``[S*M, 4]``.
         - ``"log_scales"``: The log scales of the new Gaussians of shape ``[S*M, 3]``.
         - ``"logit_opacities"``: The logit opacities of the new Gaussians of shape ``[S*M]``.
-        - ``"sh0"``: The SH0 coefficients of the new Gaussians of shape ``[S*M, 1, 3]``.
-        - ``"shN"``: The SHN coefficients of the new Gaussians of shape ``[S*M, K-1, 3]``.
+        - ``"sh_coeffs"``: The SHN coefficients of the new Gaussians of shape ``[S*M, K, 3]``.
 
         Args:
             split_indices (torch.Tensor): A 1D tensor of indices indicating which Gaussians to split.
@@ -1056,8 +1046,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
                 "quats": torch.empty((0, 4), device=self._model.device),
                 "log_scales": torch.empty((0, 3), device=self._model.device),
                 "logit_opacities": torch.empty((0,), device=self._model.device),
-                "sh0": torch.empty((0, 1, 3), device=self._model.device),
-                "shN": torch.empty((0, self._model.shN.shape[1], 3), device=self._model.device),
+                "sh_coeffs": torch.empty((0, self._model.sh_coeffs.shape[1], 3), device=self._model.device),
             }
         if split_factor < 2:
             raise ValueError("split_factor must be >= 2")
@@ -1074,8 +1063,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
 
         means_to_add = (self._model.means[split_indices] + split_mean_offsets).reshape(-1, 3)  # [S*M, 3]
         quats_to_add = self._model.quats[split_indices].repeat(split_factor, 1)  # [S*M, 4]
-        sh0_to_add = self._model.sh0[split_indices].repeat(split_factor, 1, 1)  # [S*M, 1, 3]
-        shN_to_add = self._model.shN[split_indices].repeat(split_factor, 1, 1)  # [S*M, K-1, 3]
+        sh_coeffs_to_add = self._model.sh_coeffs[split_indices].repeat(split_factor, 1, 1)  # [S*M, 1, 3]
 
         # Scale down each split Gaussian's scale by a factor of 0.8 * split_factor to keep the
         # overall volume of the split Gaussians roughly the same as the original Gaussian.
@@ -1094,8 +1082,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
             "quats": quats_to_add,
             "log_scales": log_scales_to_add,
             "logit_opacities": logit_opacities_to_add,
-            "sh0": sh0_to_add,
-            "shN": shN_to_add,
+            "sh_coeffs": sh_coeffs_to_add,
         }
 
     @staticmethod
