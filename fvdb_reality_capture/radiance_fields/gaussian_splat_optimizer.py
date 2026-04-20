@@ -396,7 +396,7 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
             "shN": self._config.shN_lr * lr_batch_rescale,
         }
 
-        rescaled_betas = (1.0 - batch_size * (1.0 - 0.9), 1.0 - batch_size * (1.0 - 0.999))
+        rescaled_betas = (math.pow(0.9, float(batch_size)), math.pow(0.999, float(batch_size)))
         for param_group in self._optimizer.param_groups:
             param_group["betas"] = rescaled_betas
             param_group["lr"] = reset_lr_values[param_group["name"]]
