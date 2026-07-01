@@ -336,10 +336,13 @@ class MultiProcessingTest(BasicCacheTest):
         # For now, we will just check if the cache can be accessed in a separate process.
 
         with multiprocessing.Pool(processes=4) as pool:
-            result = pool.map(
+            pool.map(
                 functools.partial(worker_mkfiles, self.cache_name, self.cache_description, self.cache_root, 5),
                 range(10),
             )
+            # Avoid Pool.__exit__ sending SIGTERM to completed workers, which pycolmap reports as an abort.
+            pool.close()
+            pool.join()
         self.assertEqual(self.cache.num_files, 10 * 5)
         for entry in range(10):
             for i in range(5):
@@ -357,10 +360,13 @@ class MultiProcessingTest(BasicCacheTest):
         # For now, we will just check if the cache can be accessed in a separate process.
 
         with multiprocessing.Pool(processes=4) as pool:
-            result = pool.map(
+            pool.map(
                 functools.partial(worker_mkfolders, self.cache_name, self.cache_description, self.cache_root, 5),
                 range(10),
             )
+            # Avoid Pool.__exit__ sending SIGTERM to completed workers, which pycolmap reports as an abort.
+            pool.close()
+            pool.join()
         self.assertEqual(self.cache.num_folders, 10 * 5)
         for entry in range(10):
             for i in range(5):
@@ -373,12 +379,15 @@ class MultiProcessingTest(BasicCacheTest):
         # For now, we will just check if the cache can be accessed in a separate process.
 
         with multiprocessing.Pool(processes=4) as pool:
-            result = pool.map(
+            pool.map(
                 functools.partial(
                     worker_mkfolders_and_files, self.cache_name, self.cache_description, self.cache_root, 2, 5
                 ),
                 range(10),
             )
+            # Avoid Pool.__exit__ sending SIGTERM to completed workers, which pycolmap reports as an abort.
+            pool.close()
+            pool.join()
         self.assertEqual(self.cache.num_folders, 10 * 2)
         for entry in range(10):
             for i in range(2):
