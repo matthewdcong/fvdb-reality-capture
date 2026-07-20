@@ -102,6 +102,10 @@ class Resume(BaseCommand):
     """Override the reconstruction referenced by a GARfVDB checkpoint if it moved."""
 
     def execute(self) -> None:
+
+        if self.device == "dgx":
+            import torch_dgx
+
         log_level = logging.DEBUG if self.verbose else logging.INFO
         logging.basicConfig(level=log_level, format="%(levelname)s : %(message)s")
         logger = logging.getLogger(__name__)
