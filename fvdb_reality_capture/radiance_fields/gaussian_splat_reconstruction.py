@@ -1338,8 +1338,10 @@ class GaussianSplatReconstruction:
                 range(0, total_steps), initial=self._start_step, unit="steps", desc="Gaussian Splat Reconstruction"
             )
 
+        torch.cuda.cudart().cudaProfilerStart()
         for epoch in range(start_epoch, self.config.max_epochs):
             for minibatch in trainloader:
+                torch.cuda.nvtx.range_push(f"minibatch {minibatch['image_id']}")
 
                 # Camera pose optimization
                 image_ids: torch.Tensor | None = None
@@ -1569,6 +1571,7 @@ class GaussianSplatReconstruction:
                     reached_max_steps = True
                     break
 
+                torch.cuda.nvtx.range_pop()
 
             # Check if we've reached max_steps and break out of outer epoch loop
             if reached_max_steps:
@@ -1597,6 +1600,7 @@ class GaussianSplatReconstruction:
                     )
                     continue
                 self.eval(log_tag=log_tag + "_eval")
+        torch.cuda.cudart().cudaProfilerStop()
 
         self._logger.info("Training completed.")
 
