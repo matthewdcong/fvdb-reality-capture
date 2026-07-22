@@ -685,8 +685,8 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
         # Compute normalized Gaussian means in the range of [0, 1 << 21) and their Morton encoding. Sort the Gaussians
         # based on their respective Morton codes in order to maximize spatial locality and minimize fragmentation.
         if self._config.post_refinement_sort:
-            bbox_min = torch.min(self._model.means, dim=0).values
-            bbox_max = torch.max(self._model.means, dim=0).values
+            bbox_min = torch.min(self._model.means)
+            bbox_max = torch.max(self._model.means)
             bbox_area = bbox_max - bbox_min
             normalized_means = (self._model.means - bbox_min) / (bbox_area)
             ijks = (normalized_means * ((1 << 21) - 1)).to(torch.int32)
