@@ -35,9 +35,9 @@
     │     default cuda device. CPU is not supported. Default is "cuda". (default: cuda)            │
     │ -v, --verbose, --no-verbose                                                                  │
     │     If set, show verbose debug messages. (default: False)                                    │
-    │ -o PATH, --out-path PATH                                                                     │
-    │     Path to save the output PLY file. Defaults to `out.ply` in the current working           │
-    │     directory. Path must end in .ply, .usdc, or .usdz. (default: out_resumed.ply)            │
+    │ -o {None}|PATH, --out-path {None}|PATH                                                       │
+    │     Optional path to save the final model. Path must end in .ply, .usdc, or .usdz. If        │
+    │     omitted, the final model is not exported. (default: None)                                │
     ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
     ╭─ io options ─────────────────────────────────────────────────────────────────────────────────╮
     │ Configure saving and logging metrics, images, and checkpoints.                               │

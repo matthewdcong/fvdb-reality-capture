@@ -75,10 +75,9 @@ class Resume(BaseCommand):
     # If set, show verbose debug messages.
     verbose: Annotated[bool, arg(aliases=["-v"])] = False
 
-    # Path to save the output PLY file.
-    # Defaults to `out.ply` in the current working directory.
-    # Path must end in .ply, .usdc, or .usdz.
-    out_path: Annotated[pathlib.Path, arg(aliases=["-o"])] = pathlib.Path("out_resumed.ply")
+    # Optional path to save the final model. Path must end in .ply, .usdc, or .usdz.
+    # If omitted, the final model is not exported.
+    out_path: Annotated[pathlib.Path | None, arg(aliases=["-o"])] = None
 
     def execute(self) -> None:
 
@@ -113,5 +112,6 @@ class Resume(BaseCommand):
 
         runner.optimize()
 
-        logger.info(f"Saving final model to {self.out_path}")
-        save_model_from_runner(self.out_path, runner)
+        if self.out_path is not None:
+            logger.info(f"Saving final model to {self.out_path}")
+            save_model_from_runner(self.out_path, runner)

@@ -110,7 +110,8 @@ class WriterConfig(GaussianSplatReconstructionWriterConfig):
 @dataclass
 class Reconstruct(BaseCommand):
     """
-    Reconstruct a Gaussian Splat Radiance Field from a dataset of posed images, and save the result as a PLY or USD file.
+    Reconstruct a Gaussian Splat Radiance Field from a dataset of posed images, and optionally save the result as a
+    PLY or USD file.
 
 
     Example usage:
@@ -127,10 +128,9 @@ class Reconstruct(BaseCommand):
     # this should be the directory containing the images and a `cameras.txt` file.
     dataset_path: Positional[Path]
 
-    # Path to save the output PLY file.
-    # Defaults to `out.ply` in the current working directory.
-    # Path must end in .ply, .usdc, or .usdz.
-    out_path: Annotated[Path, arg(aliases=["-o"])] = Path("out.ply")
+    # Optional path to save the final model. Path must end in .ply, .usdc, or .usdz.
+    # If omitted, the final model is not exported.
+    out_path: Annotated[Path | None, arg(aliases=["-o"])] = None
 
     # Name of the run. If None, a name will be generated based on the current date and time.
     run_name: Annotated[str | None, arg(aliases=["-n"])] = None
@@ -285,8 +285,9 @@ class Reconstruct(BaseCommand):
             self.logger.info("All chunks files loaded. Merging...")
             merged_splats = GaussianSplat3d.cat(splats)
 
-            self.logger.info(f"Saving merged model to {self.out_path}")
-            save_model_from_splats(self.out_path, merged_splats, runner.reconstruction_metadata)
+            if self.out_path is not None:
+                self.logger.info(f"Saving merged model to {self.out_path}")
+                save_model_from_splats(self.out_path, merged_splats, runner.reconstruction_metadata)
 
     def _run_single_reconstruction(
         self,
@@ -295,7 +296,7 @@ class Reconstruct(BaseCommand):
         viz_scene: fviz.Scene | None,
     ):
         """
-        Reconstruct a single scene and save as a PLY or USDZ file.
+        Reconstruct a single scene and optionally save it as a PLY or USD file.
 
         Args:
             sfm_scene (SfmScene): The SfM scene to reconstruct.
@@ -320,18 +321,20 @@ class Reconstruct(BaseCommand):
 
         runner.optimize()
 
-        self.logger.info(f"Saving final model to {self.out_path}")
-        save_model_from_runner(self.out_path, runner)
+        if self.out_path is not None:
+            self.logger.info(f"Saving final model to {self.out_path}")
+            save_model_from_runner(self.out_path, runner)
 
     def execute(self) -> None:
         log_level = logging.DEBUG if self.verbose else logging.INFO
         logging.basicConfig(level=log_level, format="%(levelname)s : %(message)s")
         self.logger = logging.getLogger(__name__)
 
-        if self.out_path.suffix.lower() not in [".ply", ".usdc", ".usdz"]:
-            raise ValueError("Output path must end in .ply, .usdc, or .usdz")
-        if self.out_path.exists():
-            raise ValueError(f"Output path {self.out_path} already exists")
+        if self.out_path is not None:
+            if self.out_path.suffix.lower() not in [".ply", ".usdc", ".usdz"]:
+                raise ValueError("Output path must end in .ply, .usdc, or .usdz")
+            if self.out_path.exists():
+                raise ValueError(f"Output path {self.out_path} already exists")
 
         self.logger.info(f"Loading dataset from {self.dataset_path}")
         sfm_scene = load_sfm_scene(self.dataset_path, self.dataset_type)
