@@ -40,7 +40,7 @@ class ResumeContext(Protocol):
     reconstruction_path: pathlib.Path | None
 
 
-ResumeCallback = Callable[[TrainingCheckpoint, ResumeContext, pathlib.Path], None]
+ResumeCallback = Callable[[TrainingCheckpoint, ResumeContext, pathlib.Path | None], None]
 
 
 class UnknownCheckpointMethodError(ValueError):
@@ -52,7 +52,7 @@ class ResumeHandler:
     """Resume implementation registered for one stable checkpoint method ID."""
 
     method: str
-    default_output_name: str
+    default_output_name: str | None
     callback: ResumeCallback
 
 

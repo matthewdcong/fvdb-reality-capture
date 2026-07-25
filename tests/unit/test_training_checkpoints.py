@@ -17,6 +17,7 @@ from fvdb_reality_capture.checkpoints import (
     parse_training_checkpoint,
 )
 from fvdb_reality_capture.cli.frgs._resume import Resume
+from fvdb_reality_capture.cli.frgs import _resume
 from fvdb_reality_capture.cli.frgs._resume_registry import (
     ResumeHandler,
     UnknownCheckpointMethodError,
@@ -141,6 +142,49 @@ def test_resume_dispatches_registered_method_and_uses_handler_default():
     assert checkpoint.method == method
     assert passed_command is command
     assert out_path == pathlib.Path("synthetic.product")
+
+
+@pytest.mark.parametrize("out_path", [None, pathlib.Path("resumed.ply")])
+def test_gaussian_resume_exports_only_with_explicit_output(tmp_path, monkeypatch, out_path):
+    from unittest import mock
+
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    torch.save(
+        create_training_checkpoint(GAUSSIAN_SPLAT_RECONSTRUCTION_METHOD, _state(), method_version="1.2.3").to_dict(),
+        checkpoint_path,
+    )
+    runner = mock.Mock()
+    save_model = mock.Mock()
+    monkeypatch.setattr(_resume, "GaussianSplatReconstructionWriter", mock.Mock())
+    monkeypatch.setattr(_resume.GaussianSplatReconstruction, "from_state_dict", mock.Mock(return_value=runner))
+    monkeypatch.setattr(_resume, "save_model_from_runner", save_model)
+
+    Resume(checkpoint_path=checkpoint_path, device="cpu", out_path=out_path).execute()
+
+    runner.optimize.assert_called_once_with()
+    if out_path is None:
+        save_model.assert_not_called()
+    else:
+        save_model.assert_called_once_with(out_path, runner)
+
+
+def test_garfvdb_resume_preserves_default_output(tmp_path, monkeypatch):
+    from unittest import mock
+
+    monkeypatch.chdir(tmp_path)
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    torch.save(
+        create_training_checkpoint(GARFVDB_TRAINING_METHOD, _state(), method_version="1.2.3").to_dict(),
+        checkpoint_path,
+    )
+    trainer = mock.Mock()
+    monkeypatch.setattr(_resume, "GARfVDBWriter", mock.Mock())
+    monkeypatch.setattr(_resume.GARfVDBTrainer, "from_checkpoint_state", mock.Mock(return_value=trainer))
+
+    Resume(checkpoint_path=checkpoint_path, device="cpu").execute()
+
+    trainer.train.assert_called_once_with()
+    trainer.to_product().save.assert_called_once_with(pathlib.Path("out_resumed.garfvdb"))
 
 
 @pytest.mark.parametrize(
