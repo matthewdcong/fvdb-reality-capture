@@ -2,8 +2,8 @@
 
     usage: frgs reconstruct [-h] [RECONSTRUCT OPTIONS] PATH
 
-    Reconstruct a Gaussian Splat Radiance Field from a dataset of posed images, and save the result
-    as a PLY or USD file. Example usage:
+    Reconstruct a Gaussian Splat Radiance Field from a dataset of posed images, and optionally save
+    the result as a PLY or USD file. Example usage:
 
         # Reconstruct a Gaussian splat radiance field from a Colmap dataset
         frgs reconstruct ./colmap_dataset -o ./output.ply
@@ -20,9 +20,9 @@
     ╭─ options ────────────────────────────────────────────────────────────────────────────────────╮
     │ -h, --help                                                                                   │
     │     show this help message and exit                                                          │
-    │ -o PATH, --out-path PATH                                                                     │
-    │     Path to save the output PLY file. Defaults to `out.ply` in the current working           │
-    │     directory. Path must end in .ply, .usdc, or .usdz. (default: out.ply)                    │
+    │ -o {None}|PATH, --out-path {None}|PATH                                                       │
+    │     Optional path to save the final model. Path must end in .ply, .usdc, or .usdz. If        │
+    │     omitted, the final model is not exported. (default: None)                                │
     │ -n {None}|STR, --run-name {None}|STR                                                         │
     │     Name of the run. If None, a name will be generated based on the current date and time.   │
     │     (default: None)                                                                          │
@@ -520,4 +520,3 @@
     │ --io.log-every INT                                                                           │
     │     How frequently to log metrics during reconstruction. (default: 10)                       │
     ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
-
