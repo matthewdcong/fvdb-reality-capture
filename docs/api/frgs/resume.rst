@@ -34,8 +34,9 @@
     │     default cuda device. CPU is not supported. Default is "cuda:0". (default: cuda:0)        │
     │ -v, --verbose, --no-verbose                                                                  │
     │     If set, show verbose debug messages. (default: False)                                    │
-    │ -o PATH, --out-path PATH                                                                     │
-    │     Output product path. The default is selected by the checkpoint method. (default: None)   │
+    │ -o {None}|PATH, --out-path {None}|PATH                                                       │
+    │     Optional output path. Gaussian reconstruction is exported only when provided (.ply,      │
+    │     .usdc, or .usdz). GARfVDB checkpoints default to out_resumed.garfvdb. (default: None)      │
     │ -r {None}|PATH, --reconstruction-path {None}|PATH                                            │
     │     Override a reconstruction referenced by a derived-product checkpoint. (default: None)   │
     ╰──────────────────────────────────────────────────────────────────────────────────────────────╯

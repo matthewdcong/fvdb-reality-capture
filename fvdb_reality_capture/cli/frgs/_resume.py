@@ -94,8 +94,8 @@ class Resume(BaseCommand):
     # If set, show verbose debug messages.
     verbose: Annotated[bool, arg(aliases=["-v"])] = False
 
-    # Output path. Defaults to out_resumed.ply for reconstruction checkpoints and
-    # out_resumed.garfvdb for GARfVDB checkpoints.
+    # Optional output path. Gaussian reconstruction is exported only when provided (.ply, .usdc, or .usdz).
+    # GARfVDB checkpoints default to out_resumed.garfvdb.
     out_path: Annotated[pathlib.Path | None, arg(aliases=["-o"])] = None
 
     reconstruction_path: Annotated[pathlib.Path | None, arg(aliases=["-r"])] = None
@@ -113,12 +113,16 @@ class Resume(BaseCommand):
         logger.info(f"Loading checkpoint at {self.checkpoint_path}")
         checkpoint = load_training_checkpoint(self.checkpoint_path, map_location=self.device)
         handler = get_resume_handler(checkpoint.method)
-        out_path = self.out_path or pathlib.Path(handler.default_output_name)
+        out_path = self.out_path
+        if out_path is None and handler.default_output_name is not None:
+            out_path = pathlib.Path(handler.default_output_name)
         logger.info("Dispatching checkpoint method %s", checkpoint.method)
         handler.callback(checkpoint, self, out_path)
 
 
-def _resume_garfvdb(checkpoint: TrainingCheckpoint, command: ResumeContext, out_path: pathlib.Path) -> None:
+def _resume_garfvdb(checkpoint: TrainingCheckpoint, command: ResumeContext, out_path: pathlib.Path | None) -> None:
+    if out_path is None:
+        raise ValueError("GARfVDB resume requires an output path.")
     if command.update_viz_every > 0:
         raise ValueError("Live GARfVDB resume visualization is unsupported; resume first, then use frgs show.")
     if out_path.exists():
@@ -149,7 +153,9 @@ def _resume_garfvdb(checkpoint: TrainingCheckpoint, command: ResumeContext, out_
     trainer.to_product().save(out_path)
 
 
-def _resume_gaussian_splat(checkpoint: TrainingCheckpoint, command: ResumeContext, out_path: pathlib.Path) -> None:
+def _resume_gaussian_splat(
+    checkpoint: TrainingCheckpoint, command: ResumeContext, out_path: pathlib.Path | None
+) -> None:
     writer_config = GaussianSplatReconstructionWriterConfig(
         save_images=command.io.save_images,
         save_checkpoints=command.io.save_checkpoints,
@@ -189,8 +195,9 @@ def _resume_gaussian_splat(checkpoint: TrainingCheckpoint, command: ResumeContex
         viz_update_interval_epochs=command.update_viz_every,
     )
     runner.optimize()
-    logging.getLogger(__name__).info("Saving final model to %s", out_path)
-    save_model_from_runner(out_path, runner)
+    if out_path is not None:
+        logging.getLogger(__name__).info("Saving final model to %s", out_path)
+        save_model_from_runner(out_path, runner)
 
 
 register_resume_handler(
@@ -203,7 +210,7 @@ register_resume_handler(
 register_resume_handler(
     ResumeHandler(
         method=GAUSSIAN_SPLAT_RECONSTRUCTION_METHOD,
-        default_output_name="out_resumed.ply",
+        default_output_name=None,
         callback=_resume_gaussian_splat,
     )
 )
