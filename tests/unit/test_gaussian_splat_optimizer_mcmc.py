@@ -5,11 +5,15 @@
 import tempfile
 import unittest
 
+import pytest
 import torch
 
 import fvdb_reality_capture as frc
 from fvdb_reality_capture import GaussianSplat3d
 from tests.unit.common import GettysburgGaussianSplatTestCase
+
+
+pytest.importorskip("torch_dgx", reason="torch-dgx not available")
 
 
 class GaussianSplatOptimizerMCMCTests(GettysburgGaussianSplatTestCase, unittest.TestCase):
@@ -20,8 +24,8 @@ class GaussianSplatOptimizerMCMCTests(GettysburgGaussianSplatTestCase, unittest.
         self.assertEqual(config.initial_covariance_scale, 0.1)
 
     def test_serialize_optimizer_mcmc(self):
-        if self.device != "cuda":
-            self.skipTest("GaussianSplatOptimizerMCMC uses CUDA-only ops (add_noise_to_means / relocate_gaussians)")
+        if self.device != "dgx":
+            self.skipTest("GaussianSplatOptimizerMCMC uses DGX-only ops (add_noise_to_means / relocate_gaussians)")
 
         model_1 = self.model
         max_steps = 200 * len(self.training_dataset)
@@ -48,7 +52,7 @@ class GaussianSplatOptimizerMCMCTests(GettysburgGaussianSplatTestCase, unittest.
             loss_1 = torch.nn.functional.l1_loss(pred_img_1, gt_img_1)
             loss_1.backward()
             torch.manual_seed(0)
-            torch.cuda.manual_seed(0)
+            torch.dgx.manual_seed_all(0)
             optimizer_1.refine()
             optimizer_1.step()
             optimizer_1.zero_grad()
@@ -69,7 +73,7 @@ class GaussianSplatOptimizerMCMCTests(GettysburgGaussianSplatTestCase, unittest.
             self.assertAlmostEqual(loss_1.item(), loss_3.item(), places=3)
             loss_3.backward()
             torch.manual_seed(0)
-            torch.cuda.manual_seed(0)
+            torch.dgx.manual_seed_all(0)
             optimizer_2.refine()
             optimizer_2.step()
             optimizer_2.zero_grad()
@@ -80,8 +84,8 @@ class GaussianSplatOptimizerMCMCTests(GettysburgGaussianSplatTestCase, unittest.
             self.assertAlmostEqual(loss_2.item(), loss_4.item(), places=3)
 
     def test_refine_relocates_dead_gaussians(self):
-        if self.device != "cuda":
-            self.skipTest("GaussianSplatOptimizerMCMC uses CUDA-only ops (relocate_gaussians)")
+        if self.device != "dgx":
+            self.skipTest("GaussianSplatOptimizerMCMC uses DGX-only ops (relocate_gaussians)")
 
         model = self.model
         config = frc.radiance_fields.GaussianSplatOptimizerMCMCConfig(
@@ -107,7 +111,7 @@ class GaussianSplatOptimizerMCMCTests(GettysburgGaussianSplatTestCase, unittest.
 
         n_before = model.num_gaussians
         torch.manual_seed(0)
-        torch.cuda.manual_seed(0)
+        torch.dgx.manual_seed_all(0)
         refine_stats = optimizer.refine()
         self.assertEqual(refine_stats["num_relocated"], num_dead)
         self.assertEqual(refine_stats["num_added"], 0)
@@ -121,8 +125,8 @@ class GaussianSplatOptimizerMCMCTests(GettysburgGaussianSplatTestCase, unittest.
         self.assertTrue(torch.all(relocated_opacities >= config.deletion_opacity_threshold - 1e-7))
 
     def test_refine_adds_gaussians(self):
-        if self.device != "cuda":
-            self.skipTest("GaussianSplatOptimizerMCMC uses CUDA-only ops (relocate_gaussians)")
+        if self.device != "dgx":
+            self.skipTest("GaussianSplatOptimizerMCMC uses DGX-only ops (relocate_gaussians)")
 
         model = self.model
         config = frc.radiance_fields.GaussianSplatOptimizerMCMCConfig(
@@ -144,7 +148,7 @@ class GaussianSplatOptimizerMCMCTests(GettysburgGaussianSplatTestCase, unittest.
         expected_added = max(0, expected_target - n_before)
 
         torch.manual_seed(0)
-        torch.cuda.manual_seed(0)
+        torch.dgx.manual_seed_all(0)
         stats = optimizer.refine()
 
         self.assertEqual(stats["num_relocated"], 0)

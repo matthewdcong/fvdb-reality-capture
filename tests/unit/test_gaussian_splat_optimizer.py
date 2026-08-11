@@ -5,11 +5,15 @@
 import tempfile
 import unittest
 
+import pytest
 import torch
 
 import fvdb_reality_capture as frc
 from fvdb_reality_capture import GaussianSplat3d
 from tests.unit.common import GettysburgGaussianSplatTestCase
+
+
+pytest.importorskip("torch_dgx", reason="torch-dgx not available")
 
 
 class GaussianSplatOptimizerTests(GettysburgGaussianSplatTestCase, unittest.TestCase):

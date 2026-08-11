@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 import OpenImageIO as oiio
 import point_cloud_utils as pcu
+import pytest
 import torch
 import torch.nn.functional as nnf
 from fvdb.utils.tests import (
@@ -26,6 +27,8 @@ from fvdb_reality_capture import (
     evaluate_spherical_harmonics,
     gaussian_render_jagged,
 )
+
+pytest.importorskip("torch_dgx", reason="torch-dgx not available")
 
 
 def compare_images(pixels_or_path_a, pixels_or_path_b):
@@ -58,7 +61,7 @@ class BaseGaussianTestCase(unittest.TestCase):
     def setUp(self):
         torch.random.manual_seed(0)
         np.random.seed(0)
-        self.device = "cuda:0"
+        self.device = "dgx:0"
 
         data_path = self.data_path / "test_garden_cropped.npz"
 
@@ -451,7 +454,7 @@ class TestGaussianSplatTo(BaseGaussianTestCase):
         gs3d = self.gs3d.to(cpu_f16_tensor)
         self.check_device_and_dtype(gs3d, torch.device("cpu"), torch.float16)
 
-        grid = Grid.from_dense(dense_dims=1, ijk_min=0, device="cuda")
+        grid = Grid.from_dense(dense_dims=1, ijk_min=0, device=self.device)
         gs3d = gs3d.to(grid)
         self.check_device_and_dtype(gs3d, torch.device(grid.device), torch.float16)
 
@@ -480,7 +483,7 @@ class TestGaussianSplatTo(BaseGaussianTestCase):
         gs3d = self.gs3d.to(other=cpu_f16_tensor)
         self.check_device_and_dtype(gs3d, torch.device("cpu"), torch.float16)
 
-        grid = Grid.from_dense(dense_dims=1, ijk_min=0, device="cuda")
+        grid = Grid.from_dense(dense_dims=1, ijk_min=0, device=self.device)
         gs3d = gs3d.to(other=grid)
         self.check_device_and_dtype(gs3d, torch.device(grid.device), torch.float16)
 
@@ -3066,8 +3069,8 @@ class TestGaussianSplatMCMC(BaseGaussianTestCase):
         return 1.0 / (1.0 + torch.exp(-100.0 * (x - 0.995)))
 
     def test_relocate_gaussians(self):
-        if not torch.cuda.is_available():
-            self.skipTest("CUDA required for relocate_gaussians")
+        if not torch.dgx.is_available():
+            self.skipTest("DGX required for relocate_gaussians")
 
         device = torch.device(self.device)
         thr = 0.1
@@ -3118,12 +3121,12 @@ class TestGaussianSplatMCMC(BaseGaussianTestCase):
         self.assertTrue(torch.allclose(log_scales_new.cpu(), log_scales_ref, atol=1e-5, rtol=1e-5))
 
     def test_add_noise_to_means(self):
-        if not torch.cuda.is_available():
-            self.skipTest("CUDA required for add_noise_to_means")
+        if not torch.dgx.is_available():
+            self.skipTest("DGX required for add_noise_to_means")
 
         device = torch.device(self.device)
         torch.manual_seed(0)
-        torch.cuda.manual_seed(0)
+        torch.dgx.manual_seed_all(0)
 
         n = min(128, self.gs3d.means.shape[0])
         idx = torch.arange(n, device=device)
@@ -3145,11 +3148,11 @@ class TestGaussianSplatMCMC(BaseGaussianTestCase):
         )
 
         noise_scale = 0.3
-        rng_state = torch.cuda.get_rng_state(device)
+        rng_state = torch.dgx.get_rng_state(device)
         gs.add_noise_to_means(noise_scale)  # type: ignore[attr-defined]
 
         # Reconstruct the base noise drawn inside the kernel.
-        torch.cuda.set_rng_state(rng_state, device=device)
+        torch.dgx.set_rng_state(rng_state, device=device)
         base_noise = torch.randn_like(means)
 
         opacity = torch.sigmoid(logit_opacities.cpu())
@@ -3175,10 +3178,10 @@ class TestEvaluateSphericalHarmonics(unittest.TestCase):
     """Tests for the standalone evaluate_spherical_harmonics function."""
 
     def setUp(self):
-        if not torch.cuda.is_available():
-            self.skipTest("CUDA required for spherical harmonics evaluation")
+        if not torch.dgx.is_available():
+            self.skipTest("DGX required for spherical harmonics evaluation")
         torch.random.manual_seed(42)
-        self.device = "cuda:0"
+        self.device = "dgx:0"
 
     def test_degree_0_basic(self):
         """Test degree 0 SH evaluation (DC term only, view-independent)."""
@@ -3492,7 +3495,7 @@ class TestEvaluateSphericalHarmonics(unittest.TestCase):
         return world_to_camera
 
 
-@unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+@unittest.skipIf(not torch.dgx.is_available(), "DGX not available")
 class TestGaussianRenderMasks(BaseGaussianTestCase):
     """Test mask support across dense, sparse, and jagged render paths."""
 
@@ -4169,12 +4172,12 @@ class TestGaussianCameraApi(unittest.TestCase):
     tile_size = 16
 
     def setUp(self):
-        if not torch.cuda.is_available():
-            self.skipTest("CUDA not available")
+        if not torch.dgx.is_available():
+            self.skipTest("DGX not available")
 
         torch.manual_seed(0)
         np.random.seed(0)
-        self.device = "cuda:0"
+        self.device = "dgx:0"
         self.dtype = torch.float32
 
         means = torch.tensor([[0.18, -0.12, 2.8], [-0.08, 0.10, 3.4]], device=self.device, dtype=self.dtype)
@@ -4821,7 +4824,7 @@ class TestProjectionGradsMultiCamera(unittest.TestCase):
     C = 4
     W = 64
     H = 64
-    DEVICE = "cuda:0"
+    DEVICE = "dgx:0"
 
     DENSE_PARAMS = ("means", "quats", "log_scales", "logit_opacities", "sh0", "shN")
     JAGGED_PARAMS = ("means", "quats", "scales", "opacities", "sh_coeffs")
@@ -4988,7 +4991,7 @@ class TestDeduplicatePixels(unittest.TestCase):
 
     @parameterized.expand([(torch.int32,), (torch.int64,)])
     def test_empty(self, dtype):
-        pixels = JaggedTensor(torch.empty(0, 2, dtype=dtype, device="cuda"))
+        pixels = JaggedTensor(torch.empty(0, 2, dtype=dtype, device="dgx"))
         unique, inv, has_dups = self._dedup(pixels)
         self.assertFalse(has_dups)
         self.assertEqual(inv.shape[0], 0)
@@ -4997,7 +5000,7 @@ class TestDeduplicatePixels(unittest.TestCase):
     @parameterized.expand([(torch.int32,), (torch.int64,)])
     def test_single_pixel(self, dtype):
         coords = torch.tensor([[5, 10]], dtype=dtype)
-        pixels = JaggedTensor([coords]).to("cuda")
+        pixels = JaggedTensor([coords]).to("dgx")
         unique, inv, has_dups = self._dedup(pixels)
         self.assertFalse(has_dups)
         self.assertEqual(unique.jdata.shape[0], 1)
@@ -5005,7 +5008,7 @@ class TestDeduplicatePixels(unittest.TestCase):
     @parameterized.expand([(torch.int32,), (torch.int64,)])
     def test_all_unique(self, dtype):
         coords = torch.tensor([[0, 0], [0, 1], [1, 0], [1, 1], [2, 3]], dtype=dtype)
-        pixels = JaggedTensor([coords]).to("cuda")
+        pixels = JaggedTensor([coords]).to("dgx")
         unique, inv, has_dups = self._dedup(pixels)
         self.assertFalse(has_dups)
         self.assertEqual(unique.jdata.shape[0], 5)
@@ -5014,7 +5017,7 @@ class TestDeduplicatePixels(unittest.TestCase):
     @parameterized.expand([(torch.int32,), (torch.int64,)])
     def test_some_duplicates(self, dtype):
         coords = torch.tensor([[0, 0], [1, 1], [0, 0], [2, 2]], dtype=dtype)
-        pixels = JaggedTensor([coords]).to("cuda")
+        pixels = JaggedTensor([coords]).to("dgx")
         unique, inv, has_dups = self._dedup(pixels)
         self.assertTrue(has_dups)
         self.assertEqual(unique.jdata.shape[0], 3)
@@ -5026,7 +5029,7 @@ class TestDeduplicatePixels(unittest.TestCase):
     @parameterized.expand([(torch.int32,), (torch.int64,)])
     def test_all_same_pixel(self, dtype):
         coords = torch.tensor([[5, 5], [5, 5], [5, 5], [5, 5]], dtype=dtype)
-        pixels = JaggedTensor([coords]).to("cuda")
+        pixels = JaggedTensor([coords]).to("dgx")
         unique, inv, has_dups = self._dedup(pixels)
         self.assertTrue(has_dups)
         self.assertEqual(unique.jdata.shape[0], 1)
@@ -5039,7 +5042,7 @@ class TestDeduplicatePixels(unittest.TestCase):
     def test_multi_batch_no_duplicates(self, dtype):
         batch0 = torch.tensor([[0, 0], [1, 1]], dtype=dtype)
         batch1 = torch.tensor([[0, 0], [2, 2]], dtype=dtype)
-        pixels = JaggedTensor([batch0, batch1]).to("cuda")
+        pixels = JaggedTensor([batch0, batch1]).to("dgx")
         unique, inv, has_dups = self._dedup(pixels)
         self.assertFalse(has_dups)
         self.assertEqual(unique.jdata.shape[0], 4)
@@ -5049,7 +5052,7 @@ class TestDeduplicatePixels(unittest.TestCase):
     def test_multi_batch_with_duplicates(self, dtype):
         batch0 = torch.tensor([[0, 0], [1, 1], [0, 0]], dtype=dtype)
         batch1 = torch.tensor([[0, 0], [3, 3]], dtype=dtype)
-        pixels = JaggedTensor([batch0, batch1]).to("cuda")
+        pixels = JaggedTensor([batch0, batch1]).to("dgx")
         unique, inv, has_dups = self._dedup(pixels)
         self.assertTrue(has_dups)
         self.assertEqual(unique.num_tensors, 2)
@@ -5062,7 +5065,7 @@ class TestDeduplicatePixels(unittest.TestCase):
     def test_multi_batch_all_same_pixel(self, dtype):
         batch0 = torch.tensor([[1, 1], [1, 1], [1, 1]], dtype=dtype)
         batch1 = torch.tensor([[2, 2], [2, 2]], dtype=dtype)
-        pixels = JaggedTensor([batch0, batch1]).to("cuda")
+        pixels = JaggedTensor([batch0, batch1]).to("dgx")
         unique, inv, has_dups = self._dedup(pixels)
         self.assertTrue(has_dups)
         self.assertEqual(unique.num_tensors, 2)
@@ -5080,7 +5083,7 @@ class TestDeduplicatePixels(unittest.TestCase):
     @parameterized.expand([(torch.int32,), (torch.int64,)])
     def test_round_trip_some_duplicates(self, dtype):
         coords = torch.tensor([[3, 7], [1, 2], [3, 7], [5, 5], [1, 2], [9, 0]], dtype=dtype)
-        pixels = JaggedTensor([coords]).to("cuda")
+        pixels = JaggedTensor([coords]).to("dgx")
         unique, inv, has_dups = self._dedup(pixels)
         self.assertTrue(has_dups)
         self.assertEqual(unique.jdata.shape[0], 4)
@@ -5091,7 +5094,7 @@ class TestDeduplicatePixels(unittest.TestCase):
     def test_round_trip_multi_batch(self, dtype):
         batch0 = torch.tensor([[2, 3], [4, 5], [2, 3]], dtype=dtype)
         batch1 = torch.tensor([[6, 7], [6, 7], [8, 9]], dtype=dtype)
-        pixels = JaggedTensor([batch0, batch1]).to("cuda")
+        pixels = JaggedTensor([batch0, batch1]).to("dgx")
         unique, inv, has_dups = self._dedup(pixels)
         self.assertTrue(has_dups)
         reconstructed = unique.jdata[inv]
@@ -5102,7 +5105,7 @@ class TestDeduplicatePixels(unittest.TestCase):
         batch0 = torch.tensor([[0, 0], [0, 0], [1, 1]], dtype=dtype)
         batch1 = torch.tensor([[2, 2]], dtype=dtype)
         batch2 = torch.tensor([[3, 3], [4, 4], [3, 3], [4, 4]], dtype=dtype)
-        pixels = JaggedTensor([batch0, batch1, batch2]).to("cuda")
+        pixels = JaggedTensor([batch0, batch1, batch2]).to("dgx")
         unique, inv, has_dups = self._dedup(pixels)
         self.assertTrue(has_dups)
         self.assertEqual(unique.num_tensors, 3)
