@@ -7,6 +7,9 @@ import torch
 from fvdb_reality_capture import CameraModel, GaussianSplat3d, ProjectionMethod
 
 
+pytest.importorskip("torch_dgx", reason="torch-dgx not available")
+
+
 def _build_gaussian_splat(
     _fvdb,
     *,
@@ -116,7 +119,7 @@ def _render_images_from_world_masked_edge_tile_worker(queue) -> None:
     try:
         import fvdb
 
-        device = torch.device("cuda")
+        device = torch.device("dgx")
         dtype = torch.float32
 
         C, N, D = 1, 1, 3
@@ -172,12 +175,12 @@ def _render_images_from_world_masked_edge_tile_worker(queue) -> None:
         queue.put(("err", traceback.format_exc()))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_images_from_world_grads_nonzero():
     # Import inside the test so CPU-only environments can still collect this file.
     import fvdb
 
-    device = torch.device("cuda")
+    device = torch.device("dgx")
     C, N, D = 1, 1, 3
 
     means = torch.tensor([[0.05, 0.05, 2.5]], device=device, dtype=torch.float32, requires_grad=True)
@@ -228,7 +231,7 @@ def test_gaussiansplat3d_render_images_from_world_grads_nonzero():
     _assert_nonzero_finite_grad(sh0)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_images_from_world_grads_match_finite_differences():
     """
     Finite-difference check for the 3DGS dense rasterizer backward pass.
@@ -238,7 +241,7 @@ def test_gaussiansplat3d_render_images_from_world_grads_match_finite_differences
     """
     import fvdb
 
-    device = torch.device("cuda")
+    device = torch.device("dgx")
     dtype = torch.float32
 
     C, N, D = 1, 1, 3
@@ -414,11 +417,11 @@ def test_gaussiansplat3d_render_images_from_world_grads_match_finite_differences
             ), f"quats tangent dir {j}: autograd={dir_autograd} fd={fd_dir}"
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_images_from_world_grads_nonzero_with_shN():
     import fvdb
 
-    device = torch.device("cuda")
+    device = torch.device("dgx")
     C, N, D = 1, 1, 3
 
     means = torch.tensor([[0.05, 0.05, 2.5]], device=device, dtype=torch.float32, requires_grad=True)
@@ -471,14 +474,14 @@ def test_gaussiansplat3d_render_images_from_world_grads_nonzero_with_shN():
     _assert_nonzero_finite_grad(shN)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_images_from_world_shN_grads_match_finite_differences():
     """
     Finite-difference check for SHN coefficients (non-constant SH terms).
     """
     import fvdb
 
-    device = torch.device("cuda")
+    device = torch.device("dgx")
     dtype = torch.float32
 
     N = 1
@@ -559,7 +562,7 @@ def test_gaussiansplat3d_render_images_from_world_shN_grads_match_finite_differe
         ), f"{name}: autograd={grad_autograd} fd={grad_fd}"
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_images_from_world_backward_with_backgrounds_and_masks():
     """
     Regression test: exercise autograd backward when *both* backgrounds and masks are provided.
@@ -569,7 +572,7 @@ def test_gaussiansplat3d_render_images_from_world_backward_with_backgrounds_and_
     """
     import fvdb
 
-    device = torch.device("cuda")
+    device = torch.device("dgx")
     dtype = torch.float32
 
     C, N, D = 1, 1, 3
@@ -628,11 +631,11 @@ def test_gaussiansplat3d_render_images_from_world_backward_with_backgrounds_and_
     _assert_nonzero_finite_grad(sh0)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_images_from_world_masks_write_background_and_zero_grads():
     import fvdb
 
-    device = torch.device("cuda")
+    device = torch.device("dgx")
     dtype = torch.float32
 
     C, N, D = 1, 1, 3
@@ -692,7 +695,7 @@ def test_gaussiansplat3d_render_images_from_world_masks_write_background_and_zer
 
 
 @pytest.mark.skip(reason="Disabled: deadlock test is unreliable in CI; see PR for details")
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_images_from_world_masks_edge_tile_does_not_deadlock():
     """
     Regression test: masked *edge tiles* must not deadlock.
@@ -724,7 +727,7 @@ def test_gaussiansplat3d_render_images_from_world_masks_edge_tile_does_not_deadl
         raise AssertionError(payload)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_images_from_world_backgrounds_used_when_no_intersections():
     """
     If no Gaussians intersect the image, rasterization should return the background (if provided)
@@ -732,7 +735,7 @@ def test_gaussiansplat3d_render_images_from_world_backgrounds_used_when_no_inter
     """
     import fvdb
 
-    device = torch.device("cuda")
+    device = torch.device("dgx")
     dtype = torch.float32
 
     C, N, D = 1, 1, 3
@@ -777,11 +780,11 @@ def test_gaussiansplat3d_render_images_from_world_backgrounds_used_when_no_inter
     assert torch.equal(rendered, expected)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_images_from_world_orthographic_grads_nonzero():
     import fvdb
 
-    device = torch.device("cuda")
+    device = torch.device("dgx")
     dtype = torch.float32
 
     means = torch.tensor([[0.20, -0.15, 2.5]], device=device, dtype=dtype, requires_grad=True)
@@ -823,11 +826,11 @@ def test_gaussiansplat3d_render_images_from_world_orthographic_grads_nonzero():
     _assert_nonzero_finite_grad(means)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_images_from_world_opencv_distortion_grads_nonzero():
     import fvdb
 
-    device = torch.device("cuda")
+    device = torch.device("dgx")
     dtype = torch.float32
 
     means = torch.tensor([[0.35, -0.22, 2.8]], device=device, dtype=dtype, requires_grad=True)
@@ -873,11 +876,11 @@ def test_gaussiansplat3d_render_images_from_world_opencv_distortion_grads_nonzer
         _assert_nonzero_finite_grad(distortion_coeffs)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_depths_and_rgbd_from_world_match_for_camera_models():
     import fvdb
 
-    device = torch.device("cuda")
+    device = torch.device("dgx")
     dtype = torch.float32
 
     means = torch.tensor([[0.18, -0.10, 2.6]], device=device, dtype=dtype)
@@ -953,11 +956,11 @@ def test_gaussiansplat3d_render_depths_and_rgbd_from_world_match_for_camera_mode
         torch.testing.assert_close(rgbd[..., -1:], depths, atol=1e-5, rtol=1e-5)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+@pytest.mark.skipif(not torch.dgx.is_available(), reason="DGX not available")
 def test_gaussiansplat3d_render_depth_and_rgbd_from_world_masks_apply_backgrounds():
     import fvdb
 
-    device = torch.device("cuda")
+    device = torch.device("dgx")
     dtype = torch.float32
 
     means = torch.tensor([[0.10, -0.10, 2.4]], device=device, dtype=dtype)

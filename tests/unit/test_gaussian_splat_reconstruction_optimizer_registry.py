@@ -5,10 +5,14 @@
 import unittest
 from typing import Any
 
+import pytest
 import torch
 
 import fvdb_reality_capture as frc
 from tests.unit.common import load_gettysburg_scene_and_dataset
+
+
+pytest.importorskip("torch_dgx", reason="torch-dgx not available")
 
 
 class MockWriter(frc.radiance_fields.GaussianSplatReconstructionBaseWriter):
@@ -39,7 +43,7 @@ class GaussianSplatReconstructionOptimizerRegistryTests(unittest.TestCase):
         _, dataset = load_gettysburg_scene_and_dataset()
         # Use the transformed scene from the dataset so the tests match other unit tests.
         self.sfm_scene = dataset.sfm_scene
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "dgx" if torch.dgx.is_available() else "cpu"
 
         # Keep these tests lightweight: no eval, no saving, no refinement, no pose optimization.
         self.recon_config = frc.radiance_fields.GaussianSplatReconstructionConfig(
@@ -67,8 +71,8 @@ class GaussianSplatReconstructionOptimizerRegistryTests(unittest.TestCase):
         self.assertIsInstance(runner.optimizer, frc.radiance_fields.GaussianSplatOptimizer)
 
     def test_from_sfm_scene_uses_mcmc_optimizer_for_mcmc_config(self):
-        if self.device != "cuda":
-            self.skipTest("GaussianSplatOptimizerMCMC uses CUDA-only ops")
+        if self.device != "dgx":
+            self.skipTest("GaussianSplatOptimizerMCMC uses DGX-only ops")
         optimizer_config = frc.radiance_fields.GaussianSplatOptimizerMCMCConfig(
             noise_lr=0.0,  # deterministic for tests
             insertion_rate=1.0,
@@ -106,8 +110,8 @@ class GaussianSplatReconstructionOptimizerRegistryTests(unittest.TestCase):
         self.assertEqual(runner2.optimizer.state_dict().get("name"), frc.radiance_fields.GaussianSplatOptimizer.name())
 
     def test_checkpoint_roundtrip_preserves_mcmc_optimizer_type(self):
-        if self.device != "cuda":
-            self.skipTest("GaussianSplatOptimizerMCMC uses CUDA-only ops")
+        if self.device != "dgx":
+            self.skipTest("GaussianSplatOptimizerMCMC uses DGX-only ops")
         optimizer_config = frc.radiance_fields.GaussianSplatOptimizerMCMCConfig(
             noise_lr=0.0,
             insertion_rate=1.0,
