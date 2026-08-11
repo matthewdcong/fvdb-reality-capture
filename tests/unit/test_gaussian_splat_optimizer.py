@@ -6,12 +6,16 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
+import pytest
 import torch
 from parameterized import parameterized
 
 import fvdb_reality_capture as frc
 from fvdb_reality_capture import GaussianSplat3d
 from tests.unit.common import GettysburgGaussianSplatTestCase
+
+
+pytest.importorskip("torch_dgx", reason="torch-dgx not available")
 
 
 class GaussianSplatOptimizerBatchSizeTests(unittest.TestCase):
