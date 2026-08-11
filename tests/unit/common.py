@@ -273,7 +273,7 @@ class GettysburgGaussianSplatTestCase:  # intentionally not typed as unittest.Te
 
         scene, training_dataset = load_gettysburg_scene_and_dataset()
         self.training_dataset: frc.radiance_fields.SfmDataset = training_dataset
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "dgx" if torch.dgx.is_available() else "cpu"
         self.model: GaussianSplat3d = init_gaussian_splat_model(self.device, self.training_dataset)
         self.scene_scale = compute_scene_scale(scene)
 

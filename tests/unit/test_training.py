@@ -8,11 +8,15 @@ from typing import Any
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 import torch
 
 import fvdb_reality_capture as frc
 from fvdb_reality_capture import radiance_fields
 from fvdb_reality_capture.radiance_fields.gaussian_splat_dataset import SfmDataset
+
+
+pytest.importorskip("torch_dgx", reason="torch-dgx not available")
 
 
 class MockWriter(radiance_fields.GaussianSplatReconstructionBaseWriter):
@@ -66,6 +70,7 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
             self.sfm_scene,
             config=short_config,
             use_every_n_as_val=2,
+            device="dgx",
         )
 
         runner.optimize()
@@ -73,8 +78,8 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
         self.assertEqual(runner.model.num_gaussians, self.sfm_scene.points.shape[0])
 
     def test_run_training_with_mcmc_optimizer_no_refine(self):
-        if not torch.cuda.is_available():
-            self.skipTest("GaussianSplatOptimizerMCMC uses CUDA-only ops")
+        if not torch.dgx.is_available():
+            self.skipTest("GaussianSplatOptimizerMCMC uses DGX-only ops")
 
         short_config = frc.radiance_fields.GaussianSplatReconstructionConfig(
             max_epochs=1,
@@ -96,6 +101,7 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
             config=short_config,
             optimizer_config=mcmc_opt_config,
             use_every_n_as_val=2,
+            device="dgx",
         )
         self.assertIsInstance(runner.optimizer, frc.radiance_fields.GaussianSplatOptimizerMCMC)
 
@@ -128,8 +134,8 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
         np.testing.assert_allclose(datum["distortion_coeffs"].numpy(), expected_distortion_coeffs)
 
     def test_pose_optimization_warns_with_holdout_and_uses_scene_global_pose_table(self):
-        if not torch.cuda.is_available():
-            self.skipTest("Camera pose optimization test requires CUDA")
+        if not torch.dgx.is_available():
+            self.skipTest("Camera pose optimization test requires DGX")
 
         short_config = frc.radiance_fields.GaussianSplatReconstructionConfig(
             max_epochs=1,
@@ -148,6 +154,7 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
                 self.sfm_scene,
                 config=short_config,
                 use_every_n_as_val=2,
+                device="dgx",
             )
 
         pose_adjust_model = runner.pose_adjust_model
@@ -224,8 +231,8 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
         optimizer_configs: list[tuple[str, frc.radiance_fields.GaussianSplatOptimizerConfig, str]] = [
             ("default", frc.radiance_fields.GaussianSplatOptimizerConfig(), "cpu"),
         ]
-        if torch.cuda.is_available():
-            optimizer_configs.append(("mcmc", frc.radiance_fields.GaussianSplatOptimizerMCMCConfig(), "cuda"))
+        if torch.dgx.is_available():
+            optimizer_configs.append(("mcmc", frc.radiance_fields.GaussianSplatOptimizerMCMCConfig(), "dgx"))
 
         for name, optimizer_config, device in optimizer_configs:
             for batch_size in (1, 4):
@@ -281,9 +288,9 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
                     places=12,
                 )
 
-    def test_from_state_dict_restores_cpu_loaded_legacy_pose_checkpoint_on_cuda(self):
-        if not torch.cuda.is_available():
-            self.skipTest("Legacy pose checkpoint restore test requires CUDA")
+    def test_from_state_dict_restores_cpu_loaded_legacy_pose_checkpoint_on_dgx(self):
+        if not torch.dgx.is_available():
+            self.skipTest("Legacy pose checkpoint restore test requires DGX")
 
         short_config = frc.radiance_fields.GaussianSplatReconstructionConfig(
             max_epochs=1,
@@ -298,6 +305,7 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
             self.sfm_scene,
             config=short_config,
             use_every_n_as_val=2,
+            device="dgx",
         )
         pose_adjust_model = runner.pose_adjust_model
         self.assertIsNotNone(pose_adjust_model)
@@ -320,16 +328,16 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
             level="WARNING",
         ) as logs:
             restored = frc.radiance_fields.GaussianSplatReconstruction.from_state_dict(
-                cpu_loaded_checkpoint, device="cuda"
+                cpu_loaded_checkpoint, device="dgx"
             )
 
-        self.assertEqual(restored.device.type, "cuda")
-        self.assertEqual(restored.model.device.type, "cuda")
+        self.assertEqual(restored.device.type, "dgx")
+        self.assertEqual(restored.model.device.type, "dgx")
         restored_pose_adjust_model = restored.pose_adjust_model
         self.assertIsNotNone(restored_pose_adjust_model)
         assert restored_pose_adjust_model is not None
         self.assertEqual(restored_pose_adjust_model.num_poses, self.sfm_scene.num_images)
-        self.assertEqual(restored_pose_adjust_model.pose_embeddings.weight.device.type, "cuda")
+        self.assertEqual(restored_pose_adjust_model.pose_embeddings.weight.device.type, "dgx")
         self.assertTrue(any("legacy checkpoint" in message.lower() for message in logs.output))
 
     def test_run_training_with_mcmc_optimizer_with_refine_small_epoch(self):
@@ -337,8 +345,8 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
         Integration-style test: run a very short epoch (few images) and ensure the training loop
         actually calls optimizer.refine() for the MCMC optimizer, causing insertion to occur.
         """
-        if not torch.cuda.is_available():
-            self.skipTest("GaussianSplatOptimizerMCMC uses CUDA-only ops")
+        if not torch.dgx.is_available():
+            self.skipTest("GaussianSplatOptimizerMCMC uses DGX-only ops")
 
         # Make the "epoch" short by using only a few images.
         num_images = min(4, len(self.sfm_scene.images))
@@ -370,6 +378,7 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
             config=short_config,
             optimizer_config=mcmc_opt_config,
             use_every_n_as_val=-1,
+            device="dgx",
         )
         self.assertIsInstance(runner.optimizer, frc.radiance_fields.GaussianSplatOptimizerMCMC)
 
@@ -395,6 +404,7 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
             config=short_config,
             use_every_n_as_val=2,
             writer=writer,
+            device="dgx",
         )
         num_val = len(np.arange(0, len(self.sfm_scene.images), 2))
         num_train = len(self.sfm_scene.images) - num_val
@@ -431,6 +441,7 @@ class GaussianSplatReconstructionTests(unittest.TestCase):
             config=short_config,
             use_every_n_as_val=2,
             writer=writer,
+            device="dgx",
         )
         num_val = len(np.arange(0, len(self.sfm_scene.images), 2))
         num_train = len(self.sfm_scene.images) - num_val
