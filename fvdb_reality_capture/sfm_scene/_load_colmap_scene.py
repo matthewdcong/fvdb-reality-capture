@@ -36,15 +36,23 @@ def load_colmap_scene(colmap_path: pathlib.Path):
     colmap_image_ids = adapter.registered_image_ids()
     num_images = len(colmap_image_ids)
 
-    (
-        points3D,
-        point3D_ids,
-        point3D_colors,
-        point3D_errors,
-        point3D_id_to_point3D_idx,
-        point3D_id_to_images,
-    ) = adapter.points_from_scene()
-    point3D_id_order_hash = _point_id_order_hash(point3D_ids)
+    direct_point_indices = None
+    if adapter.uses_direct_binary_point_load:
+        points3D, point3D_colors, point3D_errors, point3D_id_order_hash, direct_point_indices = (
+            adapter.points_from_binary_scene()
+        )
+        point3D_id_to_point3D_idx = None
+        point3D_id_to_images = None
+    else:
+        (
+            points3D,
+            point3D_ids,
+            point3D_colors,
+            point3D_errors,
+            point3D_id_to_point3D_idx,
+            point3D_id_to_images,
+        ) = adapter.points_from_scene()
+        point3D_id_order_hash = _point_id_order_hash(point3D_ids)
 
     cache = SfmCache.get_cache(colmap_path / "_cache", "sfm_dataset_cache", "Cache for SFM dataset")
 
@@ -110,15 +118,20 @@ def load_colmap_scene(colmap_path: pathlib.Path):
         _, point_indices = cache.read_file("visible_points_per_image")
     else:
         logger.info("Computing and caching visible points per image...")
-        # For each point, get the images that see it
-        point_indices = dict()  # Map from image names to point indices
-        for point_id, data in tqdm.tqdm(point3D_id_to_images.items()):
-            # For each image that sees this point, add the index of the point
-            # to a list of points corresponding to that image
-            for image_id, _ in data:
-                point_idx = point3D_id_to_point3D_idx[point_id]
-                point_indices.setdefault(int(image_id), []).append(point_idx)
-        point_indices = {k: np.array(v).astype(np.int32) for k, v in point_indices.items()}
+        if direct_point_indices is not None:
+            point_indices = direct_point_indices
+        else:
+            assert point3D_id_to_images is not None
+            assert point3D_id_to_point3D_idx is not None
+            # For each point, get the images that see it
+            point_indices = dict()  # Map from image names to point indices
+            for point_id, data in tqdm.tqdm(point3D_id_to_images.items()):
+                # For each image that sees this point, add the index of the point
+                # to a list of points corresponding to that image
+                for image_id, _ in data:
+                    point_idx = point3D_id_to_point3D_idx[point_id]
+                    point_indices.setdefault(int(image_id), []).append(point_idx)
+            point_indices = {k: np.array(v).astype(np.int32) for k, v in point_indices.items()}
         cache.write_file(
             name="visible_points_per_image",
             data=point_indices,
@@ -153,8 +166,13 @@ def load_colmap_scene(colmap_path: pathlib.Path):
     # Transform the points to the normalized coordinate system and cast to the right types
     # Note: we do not normalize the point errors or colors, they are already in the correct format.
     # Note: we don't transform the point errors
-    points = points3D.astype(np.float32)  # type: ignore (num_points, 3)
-    points_err = point3D_errors.astype(np.float32)  # type: ignore
-    points_rgb = point3D_colors.astype(np.uint8)  # type: ignore
+    if adapter.uses_direct_binary_point_load:
+        points = points3D
+        points_err = point3D_errors
+        points_rgb = point3D_colors
+    else:
+        points = points3D.astype(np.float32)  # type: ignore (num_points, 3)
+        points_err = point3D_errors.astype(np.float32)  # type: ignore
+        points_rgb = point3D_colors.astype(np.uint8)  # type: ignore
 
     return loaded_cameras, loaded_images, points, points_err, points_rgb, cache

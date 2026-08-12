@@ -3,6 +3,7 @@
 #
 
 import pathlib
+import struct
 import tempfile
 import unittest
 from collections import OrderedDict
@@ -78,6 +79,28 @@ class FakeReconstruction:
 
 
 class LoadColmapSceneTests(unittest.TestCase):
+    def test_load_reconstruction_without_points_uses_empty_temporary_point_model(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sparse_path = pathlib.Path(tmpdir)
+            for file_name in ("cameras.bin", "images.bin", "rigs.bin", "frames.bin"):
+                (sparse_path / file_name).write_bytes(file_name.encode())
+
+            reconstruction = object()
+
+            def load_temporary_model(model_path: pathlib.Path):
+                model_path = pathlib.Path(model_path)
+                self.assertEqual((model_path / "points3D.bin").read_bytes(), struct.pack("<Q", 0))
+                for file_name in ("cameras.bin", "images.bin", "rigs.bin", "frames.bin"):
+                    self.assertEqual((model_path / file_name).resolve(), (sparse_path / file_name).resolve())
+                return reconstruction
+
+            with patch(
+                "fvdb_reality_capture.sfm_scene.adapter.pycolmap.Reconstruction", side_effect=load_temporary_model
+            ):
+                loaded_reconstruction = COLMAPAdapter._load_reconstruction_without_points(sparse_path)
+
+            self.assertIs(loaded_reconstruction, reconstruction)
+
     def test_supported_colmap_camera_models_map_to_expected_fvdb_models_and_coeffs(self):
         test_cases = [
             (

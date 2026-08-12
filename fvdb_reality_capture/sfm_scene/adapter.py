@@ -1,13 +1,17 @@
 # Copyright Contributors to the OpenVDB Project
 # SPDX-License-Identifier: Apache-2.0
 #
+import os
 import pathlib
+import struct
+import tempfile
 from abc import ABC, abstractmethod
 
 import numpy as np
 import pycolmap
 from ..enums import CameraModel
 
+from ._read_colmap_points import read_colmap_points, read_num_colmap_points
 from .sfm_metadata import SfmCameraMetadata
 
 
@@ -83,8 +87,14 @@ class COLMAPAdapter(Adapter):
         5: "OPENCV_FISHEYE",
     }
     VISIBILITY_CACHE_LOADER = "pycolmap"
+    DIRECT_BINARY_POINT_LOAD_THRESHOLD = 1_000_000
 
     def __init__(self, colmap_path: pathlib.Path):
+        self._points_path = self._binary_points_path(colmap_path)
+        self._direct_binary_point_load = (
+            self._points_path is not None
+            and read_num_colmap_points(self._points_path) >= self.DIRECT_BINARY_POINT_LOAD_THRESHOLD
+        )
         self._reconstruction = self._load_reconstruction(colmap_path)
 
     @staticmethod
@@ -95,13 +105,45 @@ class COLMAPAdapter(Adapter):
         if not colmap_path.exists():
             raise FileNotFoundError(f"COLMAP directory {colmap_path} does not exist.")
 
+        colmap_sparse_path = COLMAPAdapter._sparse_path(colmap_path)
+
+        points_path = colmap_sparse_path / "points3D.bin"
+        if (
+            points_path.exists()
+            and read_num_colmap_points(points_path) >= COLMAPAdapter.DIRECT_BINARY_POINT_LOAD_THRESHOLD
+        ):
+            return COLMAPAdapter._load_reconstruction_without_points(colmap_sparse_path)
+
+        return pycolmap.Reconstruction(colmap_sparse_path)
+
+    @staticmethod
+    def _sparse_path(colmap_path: pathlib.Path) -> pathlib.Path:
         colmap_sparse_path = colmap_path / "sparse" / "0"
         if not colmap_sparse_path.exists():
             colmap_sparse_path = colmap_path / "sparse"
         if not colmap_sparse_path.exists():
             raise FileNotFoundError(f"COLMAP directory {colmap_sparse_path} does not exist.")
+        return colmap_sparse_path
 
-        return pycolmap.Reconstruction(colmap_sparse_path)
+    @staticmethod
+    def _binary_points_path(colmap_path: pathlib.Path) -> pathlib.Path | None:
+        try:
+            points_path = COLMAPAdapter._sparse_path(colmap_path) / "points3D.bin"
+        except FileNotFoundError:
+            return None
+        return points_path if points_path.exists() else None
+
+    @staticmethod
+    def _load_reconstruction_without_points(colmap_sparse_path: pathlib.Path) -> pycolmap.Reconstruction:
+        with tempfile.TemporaryDirectory(prefix="frc_colmap_metadata_") as temporary_directory:
+            temporary_path = pathlib.Path(temporary_directory)
+            for file_name in ("cameras.bin", "images.bin", "rigs.bin", "frames.bin"):
+                source_path = colmap_sparse_path / file_name
+                if source_path.exists():
+                    os.symlink(source_path.resolve(), temporary_path / file_name)
+            with (temporary_path / "points3D.bin").open("wb") as points_file:
+                points_file.write(struct.pack("<Q", 0))
+            return pycolmap.Reconstruction(temporary_path)
 
     def _camera(self, camera_id: int) -> pycolmap.Camera:
         return self._reconstruction.cameras[camera_id]
@@ -263,6 +305,17 @@ class COLMAPAdapter(Adapter):
             point3D_id_to_point3D_idx,
             point3D_id_to_images,
         )
+
+    @property
+    def uses_direct_binary_point_load(self) -> bool:
+        return self._direct_binary_point_load
+
+    def points_from_binary_scene(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, str, dict[int, np.ndarray]]:
+        if not self._direct_binary_point_load or self._points_path is None:
+            raise RuntimeError("Direct binary point loading is not enabled for this COLMAP scene")
+        return read_colmap_points(self._points_path)
 
     @property
     def visibility_cache_loader(self) -> str:
