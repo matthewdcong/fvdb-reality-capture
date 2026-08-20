@@ -38,6 +38,21 @@ from .gaussian_splat_reconstruction_writer import (
 )
 
 
+def _shutdown_dataloader_workers(dataloader: torch.utils.data.DataLoader) -> None:
+    """Shut down a persistent DataLoader iterator without waiting for garbage collection.
+
+    PyTorch does not expose a public shutdown method for persistent DataLoader
+    workers.  Leaving their cleanup to interpreter shutdown can prevent CLI
+    processes from terminating, especially after a long accelerator-backed run.
+    """
+    iterator = getattr(dataloader, "_iterator", None)
+    if iterator is None:
+        return
+
+    iterator._shutdown_workers()
+    dataloader._iterator = None
+
+
 def _collate_cached_sfm_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """Add a batch dimension to shared rasters without copying their storage.
 
@@ -1590,6 +1605,7 @@ class GaussianSplatReconstruction:
                 self.eval(log_tag=log_tag + "_eval")
         torch.cuda.cudart().cudaProfilerStop()
 
+        _shutdown_dataloader_workers(trainloader)
         self._logger.info("Training completed.")
 
     @torch.no_grad()
