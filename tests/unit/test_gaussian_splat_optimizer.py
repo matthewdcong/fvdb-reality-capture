@@ -4,16 +4,148 @@
 
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pytest
 import torch
+from fvdb import morton
 
 import fvdb_reality_capture as frc
 from fvdb_reality_capture import GaussianSplat3d
 from tests.unit.common import GettysburgGaussianSplatTestCase
 
-
 pytest.importorskip("torch_dgx", reason="torch-dgx not available")
+
+
+class GaussianSplatOptimizerRefinementRemappingTests(unittest.TestCase):
+    def test_sorted_refinement_matches_two_pass_reference(self):
+        num_gaussians = 8
+        model = GaussianSplat3d.from_tensors(
+            means=torch.tensor(
+                [
+                    [0.8, 0.1, 0.3],
+                    [0.2, 0.7, 0.6],
+                    [0.9, 0.8, 0.2],
+                    [0.1, 0.4, 0.9],
+                    [0.6, 0.3, 0.7],
+                    [0.4, 0.9, 0.1],
+                    [0.7, 0.2, 0.8],
+                    [0.3, 0.6, 0.4],
+                ]
+            ),
+            quats=torch.arange(num_gaussians * 4, dtype=torch.float32).reshape(num_gaussians, 4) + 1.0,
+            log_scales=torch.linspace(-5.0, -2.0, num_gaussians * 3).reshape(num_gaussians, 3),
+            logit_opacities=torch.linspace(-2.0, 2.0, num_gaussians),
+            sh0=torch.arange(num_gaussians * 3, dtype=torch.float32).reshape(num_gaussians, 1, 3),
+            shN=torch.arange(num_gaussians * 18, dtype=torch.float32).reshape(num_gaussians, 6, 3),
+            accumulate_mean_2d_gradients=True,
+        )
+        model.requires_grad = True
+
+        class _Scene:
+            @staticmethod
+            def spatial_scale(_mode):
+                return 1.0
+
+        config = frc.radiance_fields.GaussianSplatOptimizerConfig(
+            insertion_duplication_factor=3,
+            insertion_split_factor=3,
+            opacity_updates_use_revised_formulation=True,
+            post_refinement_sort=True,
+            reset_opacities_every_n_refinements=-1,
+            use_scales_for_deletion_after_n_refinements=100,
+        )
+        optimizer = frc.radiance_fields.GaussianSplatOptimizer.from_model_and_scene(model, _Scene(), config)
+
+        # Initialize Adam, then make every gradient and moment entry identifiable by its source row.
+        for group_index, param_group in enumerate(optimizer._optimizer.param_groups):
+            param = param_group["params"][0]
+            param.grad = torch.ones_like(param)
+        optimizer.step()
+        for group_index, param_group in enumerate(optimizer._optimizer.param_groups):
+            param = param_group["params"][0]
+            param.grad = torch.arange(param.numel(), dtype=param.dtype).reshape(param.shape) + group_index * 1_000
+            for state_index, state_name in enumerate(("exp_avg", "exp_avg_sq")):
+                state = optimizer._optimizer.state[param][state_name]
+                state.copy_(
+                    torch.arange(state.numel(), dtype=state.dtype).reshape(state.shape)
+                    + group_index * 10_000
+                    + state_index * 100_000
+                )
+
+        duplication_indices = torch.tensor([2, 5])
+        split_indices = torch.tensor([4])
+        deletion_indices = torch.tensor([1])
+        is_duplicated = torch.zeros(num_gaussians, dtype=torch.bool)
+        is_duplicated[duplication_indices] = True
+        is_split = torch.zeros(num_gaussians, dtype=torch.bool)
+        is_split[split_indices] = True
+        is_deleted = torch.zeros(num_gaussians, dtype=torch.bool)
+        is_deleted[deletion_indices] = True
+        kept_indices = torch.where(~(is_split | is_deleted))[0]
+
+        old_parameters = {
+            name: getattr(model, name).detach().clone()
+            for name in ("means", "quats", "log_scales", "logit_opacities", "sh0", "shN")
+        }
+        old_gradients = {name: getattr(model, name).grad.detach().clone() for name in old_parameters}
+        old_optimizer_state = {
+            param_group["name"]: {
+                state_name: optimizer._optimizer.state[param_group["params"][0]][state_name].detach().clone()
+                for state_name in ("exp_avg", "exp_avg_sq")
+            }
+            for param_group in optimizer._optimizer.param_groups
+        }
+
+        # Reproduce the old compact/append-then-sort path as a correctness oracle.
+        torch.manual_seed(1234)
+        duplicated_gaussians = optimizer._compute_duplicated_gaussians(duplication_indices)
+        split_gaussians = optimizer._compute_split_gaussians(split_indices)
+        unsorted_parameters = {
+            name: torch.cat(
+                [old_parameters[name][kept_indices], duplicated_gaussians[name], split_gaussians[name]], dim=0
+            )
+            for name in old_parameters
+        }
+        bbox_min = torch.min(unsorted_parameters["means"])
+        bbox_max = torch.max(unsorted_parameters["means"])
+        normalized_means = (unsorted_parameters["means"] - bbox_min) / (bbox_max - bbox_min)
+        codes = morton((normalized_means * ((1 << 21) - 1)).to(torch.int32))
+        sort_indices = torch.argsort(codes)
+        expected_parameters = {name: param[sort_indices] for name, param in unsorted_parameters.items()}
+
+        num_new_gaussians = duplicated_gaussians["means"].shape[0] + split_gaussians["means"].shape[0]
+        expected_gradients = {
+            name: torch.cat([old_gradients[name][kept_indices], torch.zeros_like(param[-num_new_gaussians:])], dim=0)[
+                sort_indices
+            ]
+            for name, param in unsorted_parameters.items()
+        }
+        expected_optimizer_state = {
+            name: {
+                state_name: torch.cat(
+                    [state[kept_indices], torch.zeros_like(expected_parameters[name][-num_new_gaussians:])], dim=0
+                )[sort_indices]
+                for state_name, state in states.items()
+            }
+            for name, states in old_optimizer_state.items()
+        }
+
+        torch.manual_seed(1234)
+        with (
+            patch.object(optimizer, "_compute_insertion_masks", return_value=(is_duplicated, is_split)),
+            patch.object(optimizer, "_compute_deletion_mask", return_value=is_deleted),
+        ):
+            optimizer.refine(zero_gradients=False)
+
+        for name, expected in expected_parameters.items():
+            torch.testing.assert_close(getattr(model, name), expected)
+            torch.testing.assert_close(getattr(model, name).grad, expected_gradients[name])
+        for param_group in optimizer._optimizer.param_groups:
+            name = param_group["name"]
+            state = optimizer._optimizer.state[param_group["params"][0]]
+            for state_name in ("exp_avg", "exp_avg_sq"):
+                torch.testing.assert_close(state[state_name], expected_optimizer_state[name][state_name])
 
 
 class GaussianSplatOptimizerTests(GettysburgGaussianSplatTestCase, unittest.TestCase):

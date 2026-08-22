@@ -626,24 +626,77 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
         # Get indices of Gaussians which are preserved during refinement
         kept_indices = torch.where(~(is_split | is_deleted))[0]
 
-        duplicated_gaussians = self._compute_duplicated_gaussians(duplication_indices)
-        split_gaussians = self._compute_split_gaussians(split_indices)
+        num_kept = kept_indices.shape[0]
+        duplicated_source_indices = duplication_indices.repeat(self._config.insertion_duplication_factor - 1)
+        split_source_indices = split_indices.repeat(self._config.insertion_split_factor)
+        refined_source_indices = torch.cat([kept_indices, duplicated_source_indices, split_source_indices])
+        num_new_gaussians = duplicated_source_indices.shape[0] + split_source_indices.shape[0]
+        first_split_index = num_kept + duplicated_source_indices.shape[0]
 
-        def _cat_parameter(param: torch.Tensor, name: str) -> torch.Tensor:
-            ret = torch.cat([param[kept_indices], duplicated_gaussians[name], split_gaussians[name]], dim=0)
-            num_added_gaussians = duplicated_gaussians[name].shape[0] + split_gaussians[name].shape[0]
-            # If you want to preserve gradients, we'll do so by creating a new tensor and copying
-            # over the gradients of the kept parameters, and setting the gradients of the new parameters to zero.
+        # Most parameters of a new Gaussian are copied directly from its source Gaussian. Build a single source-index
+        # map for the final tensors so that refinement and the optional Morton permutation can share one gather. Splits
+        # only need separate values for their randomized means and reduced scales.
+        split_means, split_log_scales = self._compute_split_means_and_log_scales(split_indices)
+        refined_means = self._model.means[refined_source_indices]
+        if split_source_indices.numel() > 0:
+            refined_means[first_split_index:] = split_means
+
+        new_entry_mask = None
+        split_entry_mask = None
+        split_parameter_indices = None
+        if self._config.post_refinement_sort:
+            # Compute normalized Gaussian means in the range of [0, 1 << 21) and their Morton encoding. Apply the
+            # permutation to the compact source-index map before gathering the large model and Adam tensors. This avoids
+            # materializing the full refined state and then moving all of it a second time solely for sorting.
+            bbox_min = torch.min(refined_means)
+            bbox_max = torch.max(refined_means)
+            bbox_area = bbox_max - bbox_min
+            normalized_means = (refined_means - bbox_min) / bbox_area
+            ijks = (normalized_means * ((1 << 21) - 1)).to(torch.int32)
+            code = morton(ijks)
+            sort_indices = torch.argsort(code)
+
+            refined_means = refined_means[sort_indices]
+            refined_source_indices = refined_source_indices[sort_indices]
+            if num_new_gaussians > 0:
+                new_entry_mask = sort_indices >= num_kept
+            if split_source_indices.numel() > 0:
+                split_entry_mask = sort_indices >= first_split_index
+                split_parameter_indices = sort_indices[split_entry_mask] - first_split_index
+
+        def _zero_new_entries(tensor: torch.Tensor) -> None:
+            if num_new_gaussians == 0:
+                return
+            if new_entry_mask is None:
+                tensor[num_kept:].zero_()
+            else:
+                # A broadcast masked fill scans contiguous output shards and only writes new entries. Scattering to the
+                # Morton-ordered row indices could make every GPU write pages owned by every other GPU.
+                tensor.masked_fill_(new_entry_mask.view((-1,) + (1,) * (tensor.ndim - 1)), 0)
+
+        def _refine_parameter(param: torch.Tensor, name: str) -> torch.Tensor:
+            if name == "means":
+                ret = refined_means
+            else:
+                ret = param[refined_source_indices]
+
+            if name == "log_scales" and split_source_indices.numel() > 0:
+                if split_entry_mask is None:
+                    ret[first_split_index:] = split_log_scales
+                else:
+                    assert split_parameter_indices is not None
+                    ret[split_entry_mask] = split_log_scales[split_parameter_indices]
+            elif name == "logit_opacities" and self._config.opacity_updates_use_revised_formulation:
+                if new_entry_mask is None:
+                    ret[num_kept:] = self._compute_revised_opacities(refined_source_indices[num_kept:])
+                else:
+                    ret[new_entry_mask] = self._compute_revised_opacities(refined_source_indices[new_entry_mask])
+
+            # Preserve gradients for retained parameters when requested, but initialize gradients for new Gaussians to
+            # zero. The normal training path drops gradients during refinement.
             if param.grad is not None and not zero_gradients:
-                ret.grad = torch.cat(
-                    [
-                        param.grad[kept_indices],
-                        torch.zeros(1, *param.shape[1:], dtype=param.dtype, device=param.device).expand(
-                            num_added_gaussians, *param.shape[1:]
-                        ),
-                    ],
-                    dim=0,
-                )
+                ret.grad = param.grad[refined_source_indices]
+                _zero_new_entries(ret.grad)
             else:
                 ret.grad = None
             return ret
@@ -652,47 +705,23 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
         # Reset it so we can start accumulating for the next refinement step
         self._model.reset_accumulated_gradient_state()
         self._model.set_state(
-            means=_cat_parameter(self._model.means, "means"),
-            quats=_cat_parameter(self._model.quats, "quats"),
-            log_scales=_cat_parameter(self._model.log_scales, "log_scales"),
-            logit_opacities=_cat_parameter(self._model.logit_opacities, "logit_opacities"),
-            sh0=_cat_parameter(self._model.sh0, "sh0"),
-            shN=_cat_parameter(self._model.shN, "shN"),
+            means=_refine_parameter(self._model.means, "means"),
+            quats=_refine_parameter(self._model.quats, "quats"),
+            log_scales=_refine_parameter(self._model.log_scales, "log_scales"),
+            logit_opacities=_refine_parameter(self._model.logit_opacities, "logit_opacities"),
+            sh0=_refine_parameter(self._model.sh0, "sh0"),
+            shN=_refine_parameter(self._model.shN, "shN"),
         )
 
         def update_state_function(x: torch.Tensor):
-            num_kept = kept_indices.shape[0]
-            num_added_gaussians = (
-                num_duplicated * (self._config.insertion_duplication_factor - 1)
-                + num_split * self._config.insertion_split_factor
-            )
-            ret = torch.cat(
-                [
-                    x[kept_indices],
-                    torch.zeros(1, *x.shape[1:], dtype=x.dtype, device=x.device).expand(
-                        num_added_gaussians, *x.shape[1:]
-                    ),
-                ],
-                dim=0,
-            )
+            ret = x[refined_source_indices]
+            _zero_new_entries(ret)
             return ret
 
         self._update_optimizer_params_and_state(update_state_function)
 
         if should_reset_opacities:
             self._reset_opacities()
-
-        # Compute normalized Gaussian means in the range of [0, 1 << 21) and their Morton encoding. Sort the Gaussians
-        # based on their respective Morton codes in order to maximize spatial locality and minimize fragmentation.
-        if self._config.post_refinement_sort:
-            bbox_min = torch.min(self._model.means)
-            bbox_max = torch.max(self._model.means)
-            bbox_area = bbox_max - bbox_min
-            normalized_means = (self._model.means - bbox_min) / (bbox_area)
-            ijks = (normalized_means * ((1 << 21) - 1)).to(torch.int32)
-            code = morton(ijks)
-            indices = torch.argsort(code)
-            self.filter_gaussians(indices)
 
         self._refine_count += 1
         self._logger.debug(
@@ -1102,7 +1131,6 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
             dict[str, torch.Tensor]: A dictionary containing the new Gaussians to add.
 
         """
-        split_factor = self._config.insertion_split_factor
         if split_indices.numel() == 0:
             return {
                 "means": torch.empty((0, 3), device=self._model.device),
@@ -1112,29 +1140,14 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
                 "sh0": torch.empty((0, 1, 3), device=self._model.device),
                 "shN": torch.empty((0, self._model.shN.shape[1], 3), device=self._model.device),
             }
+        split_factor = self._config.insertion_split_factor
         if split_factor < 2:
             raise ValueError("split_factor must be >= 2")
 
-        split_scales = self._model.scales[split_indices]  # [M, 3]
-        split_quats = nnf.normalize(self._model.quats[split_indices], dim=-1)  # [M, 4]
-        rotmats = self._unit_quats_to_rotation_matrices(split_quats)  # [M, 3, 3]
-        split_mean_offsets = torch.einsum(
-            "nij,nj,bnj->bni",
-            rotmats,
-            split_scales,
-            torch.randn(split_factor, split_indices.shape[0], 3, device=self._model.device),
-        )  # [S, N, 3]
-
-        means_to_add = (self._model.means[split_indices] + split_mean_offsets).reshape(-1, 3)  # [S*M, 3]
+        means_to_add, log_scales_to_add = self._compute_split_means_and_log_scales(split_indices)
         quats_to_add = self._model.quats[split_indices].repeat(split_factor, 1)  # [S*M, 4]
         sh0_to_add = self._model.sh0[split_indices].repeat(split_factor, 1, 1)  # [S*M, 1, 3]
         shN_to_add = self._model.shN[split_indices].repeat(split_factor, 1, 1)  # [S*M, K-1, 3]
-
-        # Scale down each split Gaussian's scale by a factor of 0.8 * split_factor to keep the
-        # overall volume of the split Gaussians roughly the same as the original Gaussian.
-        # The 0.8 factor comes from the original INRIA implementation, and was determined empirically.
-        scales_denominator_factor = 0.8 * split_factor
-        log_scales_to_add = torch.log(split_scales / scales_denominator_factor).repeat(split_factor, 1)  # [S*M, 3]
 
         if self._config.opacity_updates_use_revised_formulation:
             logit_opacities_to_add = self._compute_revised_opacities(split_indices)  # [M,]
@@ -1150,6 +1163,33 @@ class GaussianSplatOptimizer(BaseGaussianSplatOptimizer):
             "sh0": sh0_to_add,
             "shN": shN_to_add,
         }
+
+    @torch.no_grad()
+    def _compute_split_means_and_log_scales(self, split_indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute the two split parameters that are not direct copies of the source Gaussians."""
+        split_factor = self._config.insertion_split_factor
+        if split_factor < 2:
+            raise ValueError("split_factor must be >= 2")
+        if split_indices.numel() == 0:
+            return self._model.means.new_empty((0, 3)), self._model.log_scales.new_empty((0, 3))
+
+        split_scales = self._model.scales[split_indices]  # [M, 3]
+        split_quats = nnf.normalize(self._model.quats[split_indices], dim=-1)  # [M, 4]
+        rotmats = self._unit_quats_to_rotation_matrices(split_quats)  # [M, 3, 3]
+        split_mean_offsets = torch.einsum(
+            "nij,nj,bnj->bni",
+            rotmats,
+            split_scales,
+            torch.randn(split_factor, split_indices.shape[0], 3, device=self._model.device),
+        )  # [S, M, 3]
+        split_means = (self._model.means[split_indices] + split_mean_offsets).reshape(-1, 3)  # [S*M, 3]
+
+        # Scale down each split Gaussian's scale by a factor of 0.8 * split_factor to keep the
+        # overall volume of the split Gaussians roughly the same as the original Gaussian.
+        # The 0.8 factor comes from the original INRIA implementation, and was determined empirically.
+        scales_denominator_factor = 0.8 * split_factor
+        split_log_scales = torch.log(split_scales / scales_denominator_factor).repeat(split_factor, 1)  # [S*M, 3]
+        return split_means, split_log_scales
 
     @staticmethod
     def _unit_quats_to_rotation_matrices(quaternions: torch.Tensor) -> torch.Tensor:
