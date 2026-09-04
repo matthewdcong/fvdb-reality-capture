@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
+import json
 import logging
 import pathlib
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, TextIO
@@ -153,6 +155,7 @@ class GaussianSplatReconstructionWriter(GaussianSplatReconstructionBaseWriter):
 
         save_path/run_name/
             checkpoints/
+                latest.json
                 <step>/
                     <first_checkpoint>.pth
                     <second_checkpoint>.pth
@@ -178,6 +181,8 @@ class GaussianSplatReconstructionWriter(GaussianSplatReconstructionBaseWriter):
             metrics_log.csv
 
     """
+
+    LATEST_CHECKPOINT_MANIFEST = "latest.json"
 
     def __init__(
         self,
@@ -206,7 +211,7 @@ class GaussianSplatReconstructionWriter(GaussianSplatReconstructionBaseWriter):
         # 1. You provide a save_path, but no run_name -> we create a unique run_name and directory
         # 2. You provide neither save_path nor run_name -> we create a unique run_name, but do not save anything
         # 3. You provide both save_path and run_name -> we use them, and create the directory if it does not exist.
-        #    If it exists, we raise an error unless exist_ok is True (then we overwrite).
+        #    If it exists, we raise an error unless exist_ok is True (then we reuse it).
         # 4. You provide a run_name, but no save_path -> we use the run_name, but do not save anything
         if run_name is None and save_path is not None:
             # You are saving data, but did not provide a run name
@@ -220,7 +225,7 @@ class GaussianSplatReconstructionWriter(GaussianSplatReconstructionBaseWriter):
             # You are saving data, and provided a run name, so use it
             save_path = (save_path / run_name).resolve()
             if not exist_ok and save_path.exists():
-                raise FileExistsError(f"Directory {save_path} already exists. Use exist_ok=True to overwrite.")
+                raise FileExistsError(f"Directory {save_path} already exists. Use exist_ok=True to reuse it.")
             save_path.mkdir(parents=True, exist_ok=exist_ok)
         else:
             # You are not saving data, but provided a run name, so use it as a tag only
@@ -543,8 +548,30 @@ class GaussianSplatReconstructionWriter(GaussianSplatReconstructionBaseWriter):
                 default_suffix=".pt",
             )
 
-            # Save checkpoint using torch.save
-            torch.save(checkpoint, ckpt_path)
+            # Publish checkpoints atomically so a terminated process cannot leave a partial file at the final path.
+            temporary_ckpt_path = ckpt_path.with_name(f".{ckpt_path.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                torch.save(checkpoint, temporary_ckpt_path)
+                temporary_ckpt_path.replace(ckpt_path)
+            finally:
+                temporary_ckpt_path.unlink(missing_ok=True)
+
+            # The manifest is only updated after the checkpoint has been published successfully. A resume can therefore
+            # use it to disambiguate multiple checkpoint files written at the same step.
+            manifest_path = self._checkpoints_path / self.LATEST_CHECKPOINT_MANIFEST
+            temporary_manifest_path = manifest_path.with_name(f".{manifest_path.name}.{uuid.uuid4().hex}.tmp")
+            manifest = {
+                "version": 1,
+                "step": global_step,
+                "checkpoint": ckpt_path.relative_to(self._checkpoints_path).as_posix(),
+            }
+            try:
+                with temporary_manifest_path.open("w", encoding="utf-8") as manifest_file:
+                    json.dump(manifest, manifest_file, indent=2)
+                    manifest_file.write("\n")
+                temporary_manifest_path.replace(manifest_path)
+            finally:
+                temporary_manifest_path.unlink(missing_ok=True)
 
     @torch.no_grad()
     def save_ply(

@@ -2,25 +2,31 @@
 
     usage: frgs resume [-h] [RESUME OPTIONS] PATH
 
-    Resume reconstructing a 3D Gaussian Splat radiance field from a checkpoint. This command loads a
-    model checkpoint and continues reconstruction from that point. The dataset used to create the
-    checkpoint must be at the same path as when the checkpoint was created.
+    Resume reconstructing a 3D Gaussian Splat radiance field from a checkpoint file or run directory.
+    When given a run directory, this command loads its latest completed checkpoint and appends new
+    output to the same directory. The dataset used to create the checkpoint must be at the same path
+    as when the checkpoint was created.
 
     Example usage:
 
         # Resume reconstruction from a checkpoint and save the final model to out_resumed.ply
         frgs resume checkpoint.pt -o out_resumed.ply
 
+        # Resume the latest completed checkpoint in an existing run and append new output to that run
+        frgs resume frgs_logs/my_run
+
     ╭─ positional arguments ───────────────────────────────────────────────────────────────────────╮
     │ PATH                                                                                         │
-    │     Path to the checkpoint file containing the Gaussian Splat radiance field. (required)     │
+    │     Path to a checkpoint file or a run directory containing checkpoints. A run directory    │
+    │     resumes its latest completed checkpoint and receives the resumed job's output.           │
+    │     (required)                                                                               │
     ╰──────────────────────────────────────────────────────────────────────────────────────────────╯
     ╭─ options ────────────────────────────────────────────────────────────────────────────────────╮
     │ -h, --help                                                                                   │
     │     show this help message and exit                                                          │
     │ -n {None}|STR, --run-name {None}|STR                                                         │
-    │     Name of the run. If None, a name will be generated based on the current date and time.   │
-    │     (default: None)                                                                          │
+    │     Name of the new output run when resuming from a checkpoint file. When resuming a run     │
+    │     directory, its existing name and location are used instead. (default: None)              │
     │ -uv FLOAT, --update-viz-every FLOAT                                                          │
     │     How frequently (in epochs) to update the viewer during reconstruction. An epoch is one   │
     │     full pass through the dataset. If -1, do not visualize. (default: -1.0)                  │
