@@ -12,6 +12,7 @@ import pytest
 import torch
 
 from fvdb_reality_capture import CameraModel
+from fvdb_reality_capture.cli.frgs._reconstruct import SceneTransformConfig as ReconstructionTransformConfig
 from fvdb_reality_capture.instance_segmentation.config import GARfVDBTransformConfig
 from fvdb_reality_capture.instance_segmentation.scene_attribute import (
     GARFVDB_MASK_ATTRIBUTE_NAME,
@@ -35,6 +36,8 @@ from fvdb_reality_capture.sfm_scene import (
 from fvdb_reality_capture.transforms import (
     CropScene,
     Identity,
+    PercentileFilterPoints,
+    ScalePercentileFilterPoints,
     SceneTransformConfig,
     UndistortImages,
 )
@@ -305,6 +308,23 @@ def test_standard_scene_pipeline_places_product_transform_last():
     assert isinstance(garfvdb_pipeline.transforms[-3], ApplyReconstructionCameraPoses)
     assert isinstance(garfvdb_pipeline.transforms[-2], UndistortImages)
     assert garfvdb_pipeline.transforms[-1] is terminal
+
+
+@pytest.mark.parametrize("config_class", [SceneTransformConfig, ReconstructionTransformConfig, GARfVDBTransformConfig])
+@pytest.mark.parametrize("coordinate_percentile", [0.0, 0.125])
+def test_shared_scene_filters_preserve_order(config_class, coordinate_percentile):
+    config = config_class(
+        point_coordinate_percentile_filter=coordinate_percentile,
+        point_scale_percentile_filter=0.25,
+    )
+    pipeline = config.build_scene_transform(alignment_transform=Identity())
+    coordinate_filter, scale_filter = pipeline.transforms[1:3]
+
+    assert isinstance(coordinate_filter, PercentileFilterPoints)
+    assert coordinate_filter.state_dict()["percentile_min"] == [coordinate_percentile] * 3
+    assert coordinate_filter.state_dict()["percentile_max"] == [100.0 - coordinate_percentile] * 3
+    assert isinstance(scale_filter, ScalePercentileFilterPoints)
+    assert scale_filter.state_dict()["percentile_filter"] == 0.25
 
 
 def test_garfvdb_mask_erosion_removes_boundaries_without_expanding_masks():

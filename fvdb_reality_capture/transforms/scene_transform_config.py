@@ -16,6 +16,7 @@ from .crop_scene import CropScene, CropSceneToPoints
 from .downsample_images import DownsampleImages
 from .filter_images_with_low_points import FilterImagesWithLowPoints
 from .percentile_filter_points import PercentileFilterPoints
+from .scale_percentile_filter_points import ScalePercentileFilterPoints
 
 
 @dataclass
@@ -33,8 +34,11 @@ class SceneTransformConfig:
     rescale_jpeg_quality: int = 95
     """JPEG quality used when writing downsampled images."""
 
-    points_percentile_filter: float = 0.0
-    """Percentile of point outliers removed independently from each bound."""
+    point_coordinate_percentile_filter: float = 0.0
+    """Percentile trimmed from each end of the x, y, and z point-coordinate distributions."""
+
+    point_scale_percentile_filter: float = 0.0
+    """Percentage removed from the upper tail of initial three-neighbor RMS point scales."""
 
     crop_bbox: tuple[float, float, float, float, float, float] | None = None
     """Optional ``(xmin, ymin, zmin, xmax, ymax, zmax)`` scene-space crop."""
@@ -55,9 +59,10 @@ class SceneTransformConfig:
         transforms: list[BaseTransform] = [
             alignment_transform,
             PercentileFilterPoints(
-                percentile_min=np.full((3,), self.points_percentile_filter),
-                percentile_max=np.full((3,), 100.0 - self.points_percentile_filter),
+                percentile_min=np.full((3,), self.point_coordinate_percentile_filter),
+                percentile_max=np.full((3,), 100.0 - self.point_coordinate_percentile_filter),
             ),
+            ScalePercentileFilterPoints(percentile_filter=self.point_scale_percentile_filter),
             DownsampleImages(
                 image_downsample_factor=self.image_downsample_factor,
                 rescaled_jpeg_quality=self.rescale_jpeg_quality,

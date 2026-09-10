@@ -54,7 +54,7 @@ reconstruction_config:
 
 training_arguments:
   image_downsample_factor: 4
-  points_percentile_filter: 0.0
+  point_coordinate_percentile_filter: 0.0
   normalization_type: pca
   crop_bbox: null
   crop_to_points: false

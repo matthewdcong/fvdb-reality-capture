@@ -22,6 +22,7 @@ from fvdb_reality_capture.radiance_fields import (
     GaussianSplatReconstructionConfig,
 )
 from fvdb_reality_capture.radiance_fields.checkpoint import GAUSSIAN_SPLAT_RECONSTRUCTION_METHOD
+from fvdb_reality_capture.transforms import SceneTransformConfig
 
 CONTRACT_VERSION = 5
 """
@@ -136,6 +137,17 @@ MCMC_OPTIMIZER_EXTRA_KEYS = {
 """
 Extra fields allowed only when using `GaussianSplatOptimizerMCMCConfig`.
 """
+
+SCENE_TRANSFORM_CONFIG_KEYS = {
+    "image_downsample_factor",
+    "rescale_jpeg_quality",
+    "point_coordinate_percentile_filter",
+    "point_scale_percentile_filter",
+    "crop_bbox",
+    "crop_to_points",
+    "min_points_per_image",
+}
+"""Shared scene-transform fields."""
 
 
 def load_benchmark_yaml(path: str) -> dict[str, Any]:
@@ -448,6 +460,15 @@ def _assert_contract_matches_dataclasses() -> None:
 
     Used by tests to ensure the contract stays aligned with code changes.
     """
+    transform_keys = set(vars(SceneTransformConfig()).keys())
+    if transform_keys != SCENE_TRANSFORM_CONFIG_KEYS:
+        _raise_contract_error(
+            "SCENE_TRANSFORM_CONFIG_KEYS out of sync with SceneTransformConfig",
+            details={
+                "missing": sorted(transform_keys - SCENE_TRANSFORM_CONFIG_KEYS),
+                "extra": sorted(SCENE_TRANSFORM_CONFIG_KEYS - transform_keys),
+            },
+        )
     recon_keys = set(vars(GaussianSplatReconstructionConfig()).keys())
     if recon_keys != RECONSTRUCTION_CONFIG_KEYS:
         _raise_contract_error(
