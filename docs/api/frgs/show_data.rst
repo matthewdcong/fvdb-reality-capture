@@ -59,7 +59,7 @@
     │     The IP address to expose the viewer server on. (default: 127.0.0.1)                      │
     │ -v, --verbose, --no-verbose                                                                  │
     │     If True, then the viewer will log verbosely. (default: False)                            │
-    │ -ppf FLOAT, --points-percentile-filter FLOAT                                                 │
+    │ -pcpf FLOAT, --point-coordinate-percentile-filter FLOAT                                     │
     │     Percentile filter for points. Points with any coordinate below this percentile or above  │
     │     (100 - this percentile) will be removed from the point cloud. This can help remove       │
     │     outliers. Set to 0.0 to disable. (default: 0.0)                                          │

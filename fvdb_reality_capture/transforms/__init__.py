@@ -9,6 +9,7 @@ from .filter_images_with_low_points import FilterImagesWithLowPoints
 from .identity import Identity
 from .normalize_scene import NormalizeScene
 from .percentile_filter_points import PercentileFilterPoints
+from .scale_percentile_filter_points import ScalePercentileFilterPoints
 from .scene_transform_config import SceneTransformConfig
 from .transform_scene import TransformScene
 from .undistort_images import UndistortImages
@@ -23,6 +24,7 @@ __all__ = [
     "NormalizeScene",
     "PercentileFilterPoints",
     "SceneTransformConfig",
+    "ScalePercentileFilterPoints",
     "Identity",
     "TransformScene",
     "UndistortImages",
