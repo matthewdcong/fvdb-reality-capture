@@ -19,6 +19,7 @@ import tqdm
 
 from fvdb_reality_capture import CameraModel
 from fvdb_reality_capture.sfm_scene import SfmPosedImageMetadata, SfmScene
+from fvdb_reality_capture.transforms import ScalePercentileFilterPoints
 
 _NEAR_EPSILON = 1.0e-6
 
@@ -59,10 +60,10 @@ class _PlaneProjection:
     rms_distance: float
 
 
-def _filter_points_by_percentile(points: np.ndarray, percentile: float) -> np.ndarray:
+def _filter_points_by_coordinate_percentile(points: np.ndarray, percentile: float) -> np.ndarray:
     """Match the symmetric per-axis percentile filtering used by ``frgs reconstruct``."""
     if percentile < 0.0 or percentile >= 50.0:
-        raise ValueError("points-percentile-filter must be in the range [0, 50).")
+        raise ValueError("point-coordinate-percentile-filter must be in the range [0, 50).")
     if percentile == 0.0:
         return points
 
@@ -73,6 +74,17 @@ def _filter_points_by_percentile(points: np.ndarray, percentile: float) -> np.nd
     if filtered_points.shape[0] == 0:
         raise ValueError(f"No points remain after applying a {percentile:g}% symmetric percentile filter.")
     return filtered_points
+
+
+def _filter_geometry_points(
+    points: np.ndarray, coordinate_percentile_filter: float, scale_percentile_filter: float
+) -> np.ndarray:
+    """Apply the coordinate and scale filters used by ``frgs reconstruct`` in the same order."""
+    filtered_points = _filter_points_by_coordinate_percentile(points, coordinate_percentile_filter)
+    scale_filter = ScalePercentileFilterPoints(percentile_filter=scale_percentile_filter)
+    if scale_percentile_filter == 0.0:
+        return filtered_points
+    return filtered_points[scale_filter.compute_point_mask(filtered_points)]
 
 
 def _bbox_corners(points: np.ndarray, margin: float) -> tuple[np.ndarray, np.ndarray]:
@@ -456,12 +468,22 @@ def _parse_args() -> argparse.Namespace:
         help="Contour simplification tolerance in grid cells for plane-concave-hull (default: 1.0).",
     )
     parser.add_argument(
-        "--points-percentile-filter",
+        "--point-coordinate-percentile-filter",
         type=float,
         default=0.0,
         help=(
             "Symmetrically reject this percentile of points at each end of every coordinate axis before computing "
-            "the geometry. Use the same value as frgs reconstruct --tx.points-percentile-filter (default: 0)."
+            "the geometry. Use the same value as frgs reconstruct --tx.point-coordinate-percentile-filter "
+            "(default: 0)."
+        ),
+    )
+    parser.add_argument(
+        "--point-scale-percentile-filter",
+        type=float,
+        default=0.0,
+        help=(
+            "Reject points in the upper tail of the initial 3-neighbor RMS scale distribution before computing "
+            "the geometry. Use the same value as frgs reconstruct --tx.point-scale-percentile-filter (default: 0)."
         ),
     )
     parser.add_argument(
@@ -492,7 +514,11 @@ def main() -> None:
         raise NotADirectoryError(f"Dataset image directory does not exist: {image_root}")
 
     scene = SfmScene.from_colmap(dataset_path)
-    geometry_points = _filter_points_by_percentile(scene.points, args.points_percentile_filter)
+    geometry_points = _filter_geometry_points(
+        scene.points,
+        coordinate_percentile_filter=args.point_coordinate_percentile_filter,
+        scale_percentile_filter=args.point_scale_percentile_filter,
+    )
     bbox: np.ndarray | None = None
     plane_hull: PlaneHull | None = None
     plane_concave_hull: PlaneConcaveHull | None = None
@@ -533,6 +559,8 @@ def main() -> None:
 
     print(f"Initial points: {scene.points.shape[0]:,}")
     print(f"Geometry points: {geometry_points.shape[0]:,}")
+    print(f"Point coordinate percentile filter: {args.point_coordinate_percentile_filter:g}")
+    print(f"Point scale percentile filter: {args.point_scale_percentile_filter:g}")
     print(f"Images: {scene.num_images:,}")
     print(f"Mode: {args.mode}")
     if bbox is not None:

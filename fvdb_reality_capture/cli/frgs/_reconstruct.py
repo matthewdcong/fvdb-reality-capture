@@ -38,6 +38,7 @@ from fvdb_reality_capture.transforms import (
     FilterImagesWithLowPoints,
     NormalizeScene,
     PercentileFilterPoints,
+    ScalePercentileFilterPoints,
 )
 
 from ._common import (
@@ -58,8 +59,10 @@ class SceneTransformConfig:
     image_downsample_factor: int = 4
     # JPEG quality to use when resaving images after downsampling
     rescale_jpeg_quality: int = 95
-    # Percentile of points to filter out based on their distance from the median point
-    points_percentile_filter: float = 0.0
+    # Percentile trimmed from each end of the x, y, and z point-coordinate distributions
+    point_coordinate_percentile_filter: float = 0.0
+    # Percentage of points to filter from the upper tail of the initial 3-neighbor RMS scale distribution
+    point_scale_percentile_filter: float = 0.0
     # Type of normalization to apply to the scene
     normalization_type: Literal["none", "pca", "ecef2enu", "similarity"] = "pca"
     # Optional bounding box (in the normalized space) to crop the scene to (xmin, xmax, ymin, ymax, zmin, zmax)
@@ -77,9 +80,10 @@ class SceneTransformConfig:
         transforms = [
             NormalizeScene(normalization_type=self.normalization_type),
             PercentileFilterPoints(
-                percentile_min=np.full((3,), self.points_percentile_filter),
-                percentile_max=np.full((3,), 100.0 - self.points_percentile_filter),
+                percentile_min=np.full((3,), self.point_coordinate_percentile_filter),
+                percentile_max=np.full((3,), 100.0 - self.point_coordinate_percentile_filter),
             ),
+            ScalePercentileFilterPoints(percentile_filter=self.point_scale_percentile_filter),
             DownsampleImages(
                 image_downsample_factor=self.image_downsample_factor,
                 rescaled_jpeg_quality=self.rescale_jpeg_quality,

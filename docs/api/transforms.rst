@@ -33,6 +33,10 @@
     :members:
     :special-members: __init__, __call__
 
+.. autoclass:: fvdb_reality_capture.transforms.ScalePercentileFilterPoints
+    :members:
+    :special-members: __init__, __call__
+
 .. autoclass:: fvdb_reality_capture.transforms.Identity
     :members:
     :special-members: __init__, __call__

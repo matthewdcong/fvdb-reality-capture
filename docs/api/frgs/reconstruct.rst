@@ -309,9 +309,12 @@
     │     Downsample images by this factor (default: 4)                                            │
     │ --tx.rescale-jpeg-quality INT                                                                │
     │     JPEG quality to use when resaving images after downsampling (default: 95)                │
-    │ --tx.points-percentile-filter FLOAT                                                          │
-    │     Percentile of points to filter out based on their distance from the median point         │
+    │ --tx.point-coordinate-percentile-filter FLOAT                                                │
+    │     Percentile trimmed from each end of the x, y, and z point-coordinate distributions      │
     │     (default: 0.0)                                                                           │
+    │ --tx.point-scale-percentile-filter FLOAT                                                     │
+    │     Percentage of points to filter from the upper tail of the initial 3-neighbor RMS scale   │
+    │     distribution (default: 0.0)                                                              │
     │ --tx.normalization-type {none,pca,ecef2enu,similarity}                                       │
     │     Type of normalization to apply to the scene (default: pca)                               │
     │ --tx.crop-bbox {None}|{FLOAT FLOAT FLOAT FLOAT FLOAT FLOAT}                                  │
