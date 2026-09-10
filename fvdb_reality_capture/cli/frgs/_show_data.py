@@ -101,7 +101,7 @@ class ShowData(BaseCommand):
 
     # Percentile filter for points. Points with any coordinate below this percentile or above (100 - this percentile)
     # will be removed from the point cloud. This can help remove outliers. Set to 0.0 to disable.
-    points_percentile_filter: Annotated[float, arg(aliases=["-ppf"])] = 0.0
+    point_coordinate_percentile_filter: Annotated[float, arg(aliases=["-pcpf"])] = 0.0
 
     # Minimum number of points a camera must observe to be included in the viewer.
     min_points_per_image: Annotated[int, arg(aliases=["-mpi"])] = 5
@@ -144,7 +144,9 @@ class ShowData(BaseCommand):
         sfm_scene = load_sfm_scene(self.dataset_path, self.dataset_type)
         sfm_scene = Compose(
             NormalizeScene("pca"),
-            PercentileFilterPoints([self.points_percentile_filter] * 3, [100.0 - self.points_percentile_filter] * 3),
+            PercentileFilterPoints(
+                [self.point_coordinate_percentile_filter] * 3, [100.0 - self.point_coordinate_percentile_filter] * 3
+            ),
             FilterImagesWithLowPoints(min_num_points=self.min_points_per_image),
         )(sfm_scene)
 
