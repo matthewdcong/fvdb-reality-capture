@@ -1380,9 +1380,9 @@ class GaussianSplatReconstruction:
                 projection_mats = minibatch["projection"].to(self.device)  # [B, 3, 3]
                 camera_models = minibatch["camera_model"]
                 distortion_coeffs = minibatch["distortion_coeffs"]
-                image = minibatch["image"]  # [B, H, W, 3]
+                image = minibatch["image"]  # [B, 3, H, W]
                 mask = minibatch["mask"] if "mask" in minibatch and not self.config.ignore_masks else None
-                image_height, image_width = image.shape[1:3]
+                image_height, image_width = image.shape[-2:]
                 sparse_depth = minibatch["sparse_depth"].to(self.device) if "sparse_depth" in minibatch else None
                 sparse_depth_uv = (
                     minibatch["sparse_depth_uv"].to(self.device, dtype=torch.int32)
@@ -1403,7 +1403,7 @@ class GaussianSplatReconstruction:
 
                 # Progressively use higher spherical harmonic degree as we optimize
                 sh_degree_to_use = min(self._global_step // increase_sh_degree_every_step, self.config.sh_degree)
-                pixels: torch.Tensor = image.to(device=self.device) / 255.0  # [B, H, W, 3]
+                pixels: torch.Tensor = image.to(device=self.device) / 255.0  # [B, 3, H, W]
 
                 render_outputs = self._render_backend.forward_train(
                     model=self.model,
@@ -1427,14 +1427,12 @@ class GaussianSplatReconstruction:
                 if mask is not None:
                     # set the ground truth pixel values to match render, thus loss is zero at mask pixels and not updated
                     mask = mask.to(self.device)
-                    pixels[~mask] = image.detach()[~mask]
+                    pixels.permute(0, 2, 3, 1)[~mask] = image.detach()[~mask]
 
-                # Image losses
-                l1loss = nnf.l1_loss(image, pixels)
-                ssimloss = 1.0 - ssim(
-                    image.permute(0, 3, 1, 2).contiguous(),
-                    pixels.permute(0, 3, 1, 2).contiguous(),
-                )
+                # Convert the render once for both losses; targets are already contiguous NCHW.
+                image_nchw = image.permute(0, 3, 1, 2).contiguous()
+                l1loss = nnf.l1_loss(image_nchw, pixels)
+                ssimloss = 1.0 - ssim(image_nchw, pixels)
                 loss = torch.lerp(l1loss, ssimloss, self.config.ssim_lambda)  # type: ignore
 
                 # Apply any additional regularization to the model for the given
@@ -1649,10 +1647,11 @@ class GaussianSplatReconstruction:
             projection_matrices = data["projection"].to(device)
             camera_models = data["camera_model"].to(device)
             distortion_coeffs = data["distortion_coeffs"].to(device)
-            ground_truth_image = data["image"].to(device) / 255.0
+            ground_truth_image = data["image"].to(device) / 255.0  # [B, 3, H, W]
+            ground_truth_image_hwc = ground_truth_image.permute(0, 2, 3, 1)
             mask_pixels = data["mask"] if "mask" in data and not self.config.ignore_masks else None
 
-            height, width = ground_truth_image.shape[1:3]
+            height, width = ground_truth_image.shape[-2:]
 
             render_outputs = self._render_backend.forward_eval(
                 model=self.model,
@@ -1674,13 +1673,14 @@ class GaussianSplatReconstruction:
             if mask_pixels is not None:
                 # set the ground truth pixel values to match render, thus loss is zero at mask pixels and not updated
                 mask_pixels = mask_pixels.to(self.device)
-                ground_truth_image[~mask_pixels] = predicted_image.detach()[~mask_pixels]
+                ground_truth_image_hwc[~mask_pixels] = predicted_image.detach()[~mask_pixels]
 
             # Save images
             self._writer.save_image(self._global_step, f"{log_tag}/predicted_image{i:04d}.jpg", predicted_image)
-            self._writer.save_image(self._global_step, f"{log_tag}/ground_truth_image{i:04d}.jpg", ground_truth_image)
+            self._writer.save_image(
+                self._global_step, f"{log_tag}/ground_truth_image{i:04d}.jpg", ground_truth_image_hwc
+            )
 
-            ground_truth_image = ground_truth_image.permute(0, 3, 1, 2).contiguous()  # [1, 3, H, W]
             predicted_image = predicted_image.permute(0, 3, 1, 2).contiguous()  # [1, 3, H, W]
             metrics["psnr"].append(psnr(predicted_image, ground_truth_image))
             metrics["ssim"].append(ssim(predicted_image, ground_truth_image))
