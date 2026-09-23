@@ -16,7 +16,7 @@ import torch.utils.data
 from torch.utils import _pytree
 from torch.utils.data import default_collate
 import tqdm
-from fvdb.utils.metrics import psnr, ssim
+from fvdb.utils.metrics import fused_l1_ssim_loss, psnr, ssim
 from fvdb.viz import Scene
 from scipy.spatial import cKDTree  # type: ignore
 
@@ -1431,9 +1431,7 @@ class GaussianSplatReconstruction:
 
                 # Convert the render once for both losses; targets are already contiguous NCHW.
                 image_nchw = image.permute(0, 3, 1, 2).contiguous()
-                l1loss = nnf.l1_loss(image_nchw, pixels)
-                ssimloss = 1.0 - ssim(image_nchw, pixels)
-                loss = torch.lerp(l1loss, ssimloss, self.config.ssim_lambda)  # type: ignore
+                loss = fused_l1_ssim_loss(image_nchw, pixels, self.config.ssim_lambda)
 
                 # Apply any additional regularization to the model for the given
                 # optimizer.
@@ -1541,8 +1539,6 @@ class GaussianSplatReconstruction:
                 # Log metrics
                 if self._global_step % self._log_interval_steps == 0:
                     self._writer.log_metric(self._global_step, f"{log_tag}/loss", loss.item())
-                    self._writer.log_metric(self._global_step, f"{log_tag}/l1loss", l1loss.item())
-                    self._writer.log_metric(self._global_step, f"{log_tag}/ssimloss", ssimloss.item())
                     self._writer.log_metric(
                         self._global_step,
                         f"{log_tag}/depth_loss",
