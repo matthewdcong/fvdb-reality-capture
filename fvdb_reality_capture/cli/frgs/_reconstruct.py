@@ -30,6 +30,7 @@ from fvdb_reality_capture.radiance_fields import (
 from fvdb_reality_capture.sfm_scene import SfmScene
 from fvdb_reality_capture.transforms import (
     BaseTransform,
+    CropScene,
     NormalizeScene,
     SceneTransformConfig as BaseSceneTransformConfig,
 )
