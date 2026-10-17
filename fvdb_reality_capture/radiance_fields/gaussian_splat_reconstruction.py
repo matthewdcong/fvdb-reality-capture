@@ -1413,7 +1413,7 @@ class GaussianSplatReconstruction:
 
                 # Progressively use higher spherical harmonic degree as we optimize
                 sh_degree_to_use = min(self._global_step // increase_sh_degree_every_step, self.config.sh_degree)
-                pixels: torch.Tensor = image.to(device=self.device) / 255.0  # [B, 3, H, W]
+                pixels: torch.Tensor = image if mask is None else image.to(device=self.device)  # [B, 3, H, W]
 
                 render_outputs = self._render_backend.forward_train(
                     model=self.model,
@@ -1437,11 +1437,12 @@ class GaussianSplatReconstruction:
                 if mask is not None:
                     # set the ground truth pixel values to match render, thus loss is zero at mask pixels and not updated
                     mask = mask.to(self.device)
+                    pixels = pixels / 255.0
                     pixels.permute(0, 2, 3, 1)[~mask] = image.detach()[~mask]
 
                 # Convert the render once for both losses; targets are already contiguous NCHW.
                 image_nchw = image.permute(0, 3, 1, 2).contiguous()
-                loss = fused_l1_ssim_loss(image_nchw, pixels, self.config.ssim_lambda)
+                loss = fused_l1_ssim_loss(image_nchw, pixels, self.config.ssim_lambda, normalize_target=mask is None)
 
                 # Apply any additional regularization to the model for the given
                 # optimizer.
