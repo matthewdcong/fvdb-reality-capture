@@ -1442,6 +1442,8 @@ class GaussianSplatReconstruction:
 
                 # Convert the render once for both losses; targets are already contiguous NCHW.
                 image_nchw = image.permute(0, 3, 1, 2).contiguous()
+                if mask is None:
+                    pixels = torch.ops.fvdb._copy_image_to_device.default(pixels, self.device)
                 loss = fused_l1_ssim_loss(image_nchw, pixels, self.config.ssim_lambda, normalize_target=mask is None)
 
                 # Apply any additional regularization to the model for the given
